@@ -1,4 +1,1 @@
-pyrogram==2.0.106
-tgcrypto==1.2.5
-pytgcalls==5.0.0
-aiohttp==3.9.0
+python-telegram-bot==20.8
