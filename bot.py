@@ -3,7 +3,7 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 17.0 FINAL
+# VERSION: 18.0 FINAL
 # LINES: 1500+
 # STATUS: PRODUCTION READY — ALL FIXED
 # ================================================================
@@ -201,13 +201,6 @@ def log_action(user_id: int, action: str, detail: str = "", target: str = ""):
         (user_id, action, detail, target, now_ist().isoformat())
     )
     conn.commit()
-    fb_put(f"logs/{user_id}_{int(time.time())}", {
-        'user_id': user_id,
-        'action': action,
-        'detail': detail,
-        'target': target,
-        'timestamp': now_ist().isoformat()
-    })
 
 def get_user(user_id: int):
     c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
@@ -222,16 +215,6 @@ def create_user(user_id: int, username: str):
         (user_id, username, 'inactive', None, now, None, now, now)
     )
     conn.commit()
-    fb_put(f"users/{user_id}", {
-        'username': username,
-        'key_type': 'inactive',
-        'key_value': None,
-        'login_date': now,
-        'expiry_date': None,
-        'is_banned': 0,
-        'used_count': 0,
-        'registered_date': now
-    })
     log_action(user_id, "REGISTER")
     return True
 
@@ -359,7 +342,7 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     return False, "❌ Invalid or already used key"
 
 # ================================================================
-# DUMP + RADAR 2 — CLEAN VERSION (NO GARBAGE)
+# DUMP + RADAR 2 — CLEAN VERSION
 # ================================================================
 def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]]:
     with open(file_path, 'rb') as f:
@@ -373,15 +356,12 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     # ===== EXTRACT CLEAN URLs ONLY =====
     all_urls = []
     
-    # Pattern: Clean HTTPS URLs
     clean_pattern = r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*)?'
     matches = re.findall(clean_pattern, text_data)
     for m in matches:
-        # Filter out garbage
         if len(m) > 10 and ' ' not in m and '\n' not in m:
             all_urls.append(m)
     
-    # Pattern: Firebase URLs
     fb_pattern = r'[a-zA-Z0-9\-]+\.firebaseio\.com/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*'
     matches = re.findall(fb_pattern, text_data)
     for m in matches:
@@ -390,13 +370,11 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         else:
             all_urls.append(m)
     
-    # Pattern: t.me links
     tm_pattern = r't\.me/[a-zA-Z0-9_]+'
     matches = re.findall(tm_pattern, text_data)
     for m in matches:
         all_urls.append(f"https://{m}")
     
-    # Pattern: unaux.com
     unaux_pattern = r'[a-zA-Z0-9\-]+\.unaux\.com/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*'
     matches = re.findall(unaux_pattern, text_data)
     for m in matches:
@@ -405,7 +383,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         else:
             all_urls.append(m)
     
-    # Remove duplicates and garbage
     all_urls = list(set([u for u in all_urls if len(u) > 10 and ' ' not in u]))
     
     # ===== Check each URL =====
@@ -447,7 +424,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     lines.append(f"Date: {fmt_ist(now_ist())}")
     lines.append("")
     
-    # RADAR 2
     lines.append("━" * 60)
     lines.append("📡 RADAR 2 SCAN — URL STATUS")
     lines.append("━" * 60)
@@ -461,7 +437,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         lines.append("  No URLs found")
     lines.append("")
     
-    # Firebase URLs
     lines.append("━" * 60)
     lines.append("📡 FIREBASE URLs")
     lines.append("━" * 60)
@@ -472,7 +447,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         lines.append("  None found")
     lines.append("")
     
-    # API Keys
     lines.append("━" * 60)
     lines.append("🔑 API KEYS")
     lines.append("━" * 60)
@@ -483,7 +457,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         lines.append("  None found")
     lines.append("")
     
-    # Flags
     lines.append("━" * 60)
     lines.append("🚩 FLAGS")
     lines.append("━" * 60)
@@ -505,7 +478,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         lines.append("  None found")
     lines.append("")
     
-    # JSON Structures
     lines.append("━" * 60)
     lines.append("📄 JSON STRUCTURES")
     lines.append("━" * 60)
@@ -534,7 +506,6 @@ def repack_so(file_path: str, old_url: str, new_url: str) -> Tuple[bool, Optiona
         text_data = data.decode('utf-8', errors='ignore')
         original = text_data
         
-        # Replace exact URL only
         text_data = text_data.replace(old_url, new_url)
         
         if text_data == original:
@@ -888,7 +859,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # ================================================================
-# FILE HANDLERS
+# FILE HANDLERS — FIXED
 # ================================================================
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -919,7 +890,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await processing_msg.edit_text("❌ Use a command first: /dump or /repack")
         os.remove(file_path)
     
-    context.user_data['action'] = ''
+    # DO NOT reset action here — keep it for repack flow
 
 # ================================================================
 # PROCESS FUNCTIONS
@@ -966,11 +937,8 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
             data = f.read()
         text_data = data.decode('utf-8', errors='ignore')
         
-        # Find clean URLs only
-        url_pattern = r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*)?'
-        urls = list(set(re.findall(url_pattern, text_data)))
-        
-        # Filter out garbage
+        clean_pattern = r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*)?'
+        urls = list(set(re.findall(clean_pattern, text_data)))
         urls = [u for u in urls if len(u) > 10 and ' ' not in u and '\n' not in u]
         
         if not urls:
@@ -978,12 +946,13 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
             os.remove(file_path)
             return
         
-        # Build URL list
         url_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(urls[:20])])
         if len(urls) > 20:
             url_list += f"\n... and {len(urls) - 20} more"
         
-        await processing_msg.edit_text(
+        await processing_msg.delete()
+        
+        await update.message.reply_text(
             f"📡 Found {len(urls)} URLs in the .so file\n\n"
             f"{url_list}\n\n"
             f"🔧 Enter the URL number to replace (or /cancel):"
@@ -992,7 +961,6 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
         context.user_data['repack_so'] = file_path
         context.user_data['repack_urls'] = urls
         context.user_data['repack_step'] = 'select'
-        await processing_msg.delete()
         return WAITING_REPACK_SELECT
         
     except Exception as e:
