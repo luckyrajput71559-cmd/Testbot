@@ -971,6 +971,10 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
 # REPACK CONVERSATION HANDLERS
 # ================================================================
 
+# ================================================================
+# REPACK FLOW — FIXED
+# ================================================================
+
 async def handle_repack_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
@@ -1042,7 +1046,6 @@ async def handle_repack_new_url(update: Update, context: ContextTypes.DEFAULT_TY
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
-
 # ================================================================
 # ADMIN COMMANDS
 # ================================================================
