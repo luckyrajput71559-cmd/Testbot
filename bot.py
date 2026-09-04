@@ -3,7 +3,7 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 19.0 FINAL
+# VERSION: 20.0 FINAL
 # LINES: 1500+
 # STATUS: PRODUCTION READY — REPACK FIXED
 # ================================================================
@@ -144,31 +144,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS repack_history (
 conn.commit()
 
 # ================================================================
-# FIREBASE HELPERS
-# ================================================================
-def fb_get(path: str) -> Optional[dict]:
-    try:
-        r = requests.get(f"{FIREBASE_URL}/{path}.json", timeout=10)
-        return r.json() if r.status_code == 200 else None
-    except:
-        return None
-
-def fb_put(path: str, data: dict) -> bool:
-    try:
-        r = requests.put(f"{FIREBASE_URL}/{path}.json", json=data, timeout=10)
-        return r.status_code in [200, 201]
-    except:
-        return False
-
-def fb_patch(path: str, data: dict) -> bool:
-    try:
-        r = requests.patch(f"{FIREBASE_URL}/{path}.json", json=data, timeout=10)
-        return r.status_code in [200, 201]
-    except:
-        return False
-
-# ================================================================
-# TIME HELPERS
+# HELPERS
 # ================================================================
 def now_ist():
     try:
@@ -191,9 +167,6 @@ def days_left(expiry_str: str) -> str:
     except:
         return "N/A"
 
-# ================================================================
-# DATABASE FUNCTIONS
-# ================================================================
 def log_action(user_id: int, action: str, detail: str = "", target: str = ""):
     c.execute(
         "INSERT INTO logs (user_id, action, detail, target, timestamp) VALUES (?, ?, ?, ?, ?)",
@@ -242,8 +215,8 @@ def check_access(user_id: int) -> Tuple[bool, str]:
             elif fb_banned == 0:
                 c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
                 conn.commit()
-    except Exception as e:
-        print(f"Firebase sync error: {e}")
+    except:
+        pass
     
     user = get_user(user_id)
     if not user:
@@ -271,7 +244,14 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     if c.fetchone():
         return False, "❌ This key has been blacklisted"
     
-    fb_data = fb_get(f"keys/{key}")
+    fb_data = None
+    try:
+        resp = requests.get(f"{FIREBASE_URL}/keys/{key}.json", timeout=5)
+        if resp.status_code == 200:
+            fb_data = resp.json()
+    except:
+        pass
+    
     if fb_data and not fb_data.get('used_by'):
         key_type = fb_data.get('type', 'custom')
         expiry_days = fb_data.get('expiry_days', 30)
@@ -286,23 +266,10 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         )
         conn.commit()
         
-        fb_patch(f"keys/{key}", {'used_by': user_id, 'used_at': now_ist().isoformat()})
-        fb_patch(f"users/{user_id}", {
-            'key_type': key_type,
-            'key_value': key,
-            'expiry_date': expiry,
-            'login_date': now_ist().isoformat(),
-            'expiry_days': expiry_days,
-            'max_devices': max_devices
-        })
-        
-        c.execute(
-            """INSERT OR REPLACE INTO keys 
-            (key, type, expiry_days, max_devices, created_by, created_at, used_by, used_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (key, key_type, expiry_days, max_devices, 0, now_ist().isoformat(), user_id, now_ist().isoformat())
-        )
-        conn.commit()
+        try:
+            requests.patch(f"{FIREBASE_URL}/keys/{key}.json", json={'used_by': user_id, 'used_at': now_ist().isoformat()})
+        except:
+            pass
         
         log_action(user_id, "REDEEM", f"{key_type}:{key}")
         return True, f"✅ Key Redeemed!\n📦 Type: {key_type}\n📅 Expires: {expiry[:10]}\n📊 Days: {expiry_days}\n📱 Devices: {max_devices}"
@@ -323,16 +290,6 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         )
         c.execute("UPDATE keys SET used_by=?, used_at=? WHERE key=?", (user_id, now_ist().isoformat(), key))
         conn.commit()
-        
-        fb_patch(f"users/{user_id}", {
-            'key_type': key_type,
-            'key_value': key,
-            'expiry_date': expiry,
-            'login_date': now_ist().isoformat(),
-            'expiry_days': expiry_days,
-            'max_devices': max_devices
-        })
-        fb_patch(f"keys/{key}", {'used_by': user_id, 'used_at': now_ist().isoformat()})
         
         log_action(user_id, "REDEEM", f"{key_type}:{key}")
         return True, f"✅ Key Redeemed!\n📦 Type: {key_type}\n📅 Expires: {expiry[:10]}\n📊 Days: {expiry_days}\n📱 Devices: {max_devices}"
@@ -491,7 +448,7 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     return '\n'.join(lines), all_urls, json_structures
 
 # ================================================================
-# REPACK
+# REPACK — SIMPLE VERSION
 # ================================================================
 def repack_so(file_path: str, old_url: str, new_url: str) -> Tuple[bool, Optional[str], str]:
     try:
@@ -606,9 +563,10 @@ def analyze_json_from_url(url: str) -> Tuple[bool, str, dict, dict]:
 # ================================================================
 app = Application.builder().token(TOKEN).build()
 
+# Conversation states
 WAITING_SO = 1
-WAITING_REPACK_SELECT = 2
-WAITING_REPACK_NEW_URL = 3
+WAITING_REPACK_URL = 2
+WAITING_REPACK_NEW = 3
 
 # ================================================================
 # COMMAND HANDLERS
@@ -920,6 +878,10 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
         os.remove(file_path)
 
+# ================================================================
+# REPACK PROCESS — SIMPLIFIED
+# ================================================================
+
 async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
     user_id = update.effective_user.id
     
@@ -954,14 +916,14 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
         context.user_data['repack_so'] = file_path
         context.user_data['repack_urls'] = urls
         context.user_data['repack_step'] = 'select'
-        return WAITING_REPACK_SELECT
+        return WAITING_REPACK_URL
         
     except Exception as e:
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
         os.remove(file_path)
 
 # ================================================================
-# REPACK CONVERSATION HANDLERS — FIXED
+# REPACK CONVERSATION HANDLERS — SIMPLIFIED
 # ================================================================
 
 async def handle_repack_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -985,11 +947,13 @@ async def handle_repack_select(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             context.user_data['repack_old_url'] = old_url
             context.user_data['repack_step'] = 'new_url'
-            return WAITING_REPACK_NEW_URL
+            return WAITING_REPACK_NEW
         else:
             await update.message.reply_text("❌ Invalid selection. Enter a number from the list.")
+            return WAITING_REPACK_URL
     except ValueError:
         await update.message.reply_text("❌ Please enter a valid number.")
+        return WAITING_REPACK_URL
 
 async def handle_repack_new_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1071,15 +1035,16 @@ async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     conn.commit()
     
-    fb_put(f"keys/{key}", {
-        'type': key_type,
-        'expiry_days': expiry_days,
-        'max_devices': max_devices,
-        'created_by': ADMIN_ID,
-        'created_at': now_ist().isoformat(),
-        'used_by': None,
-        'used_at': None
-    })
+    try:
+        requests.put(f"{FIREBASE_URL}/keys/{key}.json", json={
+            'type': key_type,
+            'expiry_days': expiry_days,
+            'max_devices': max_devices,
+            'created_by': ADMIN_ID,
+            'created_at': now_ist().isoformat()
+        })
+    except:
+        pass
     
     await update.message.reply_text(
         f"✅ Key Generated!\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1141,7 +1106,10 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = int(args[0])
         c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
         conn.commit()
-        fb_patch(f"users/{user_id}", {'is_banned': 1})
+        try:
+            requests.patch(f"{FIREBASE_URL}/users/{user_id}.json", json={'is_banned': 1})
+        except:
+            pass
         await update.message.reply_text(f"✅ User {user_id} banned")
         log_action(ADMIN_ID, "BAN", str(user_id))
     except ValueError:
@@ -1163,7 +1131,10 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = int(args[0])
         c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
         conn.commit()
-        fb_patch(f"users/{user_id}", {'is_banned': 0})
+        try:
+            requests.patch(f"{FIREBASE_URL}/users/{user_id}.json", json={'is_banned': 0})
+        except:
+            pass
         await update.message.reply_text(f"✅ User {user_id} unbanned")
         log_action(ADMIN_ID, "UNBAN", str(user_id))
     except ValueError:
