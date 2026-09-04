@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# =============================================
-# VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
-# =============================================
+# ============================================================
+# VTX DEX — PROFESSIONAL REVERSE ENGINEERING BOT
+# ============================================================
 # DEVELOPER: @VICKYGAMING0 | SOKY-DEX
-# VERSION: 5.0 FINAL
+# VERSION: 7.0 ULTIMATE
 # LINES: 1300+
-# STATUS: PRODUCTION READY
-# =============================================
+# ============================================================
 
 import os
 import sys
@@ -16,22 +15,31 @@ import sqlite3
 import hashlib
 import random
 import string
-import subprocess
-import tempfile
-import shutil
 import requests
 import binascii
-import struct
 import time
+import zipfile
+import shutil
+import subprocess
+import tempfile
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union
 from urllib.parse import urlparse
 
-# =============================================
+# ============================================================
+# LOGGING
+# ============================================================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
 # TELEGRAM IMPORTS
-# =============================================
+# ============================================================
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application,
@@ -43,18 +51,9 @@ from telegram.ext import (
     ConversationHandler
 )
 
-# =============================================
-# LOGGING SETUP
-# =============================================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# =============================================
-# TIMEZONE SETUP
-# =============================================
+# ============================================================
+# TIMEZONE
+# ============================================================
 try:
     import pytz
     IST = pytz.timezone('Asia/Kolkata')
@@ -62,27 +61,27 @@ except ImportError:
     from datetime import timezone
     IST = timezone(timedelta(hours=5, minutes=30))
 
-# =============================================
+# ============================================================
 # CONFIGURATION
-# =============================================
+# ============================================================
 TOKEN = os.getenv("TELEGRAM_TOKEN") or "8256413457:AAGurkdBHnvK7h3CZPx0lleqxEZuGnKm7dA"
 ADMIN_ID = int(os.getenv("ADMIN_ID") or "5510702228")
 BOT_NAME = "VTX DEX"
-DEV_NAME = "@VICKYGAMING0 | SOKY-DEX"
+DEV_NAME = "@VICKYGAMING0"
 FIREBASE_URL = "https://mn-rohan-default-rtdb.firebaseio.com"
 DB_FILE = "vtxdex.db"
 DUMP_DIR = "dumps"
 PATCH_DIR = "patches"
-LOG_DIR = "logs"
 TEMP_DIR = "temp"
+APK_DIR = "apks"
+LOG_DIR = "logs"
 
-# Create directories
-for d in [DUMP_DIR, PATCH_DIR, LOG_DIR, TEMP_DIR]:
+for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, APK_DIR, LOG_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# =============================================
+# ============================================================
 # DATABASE SETUP
-# =============================================
+# ============================================================
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 
@@ -94,21 +93,28 @@ c.execute('''CREATE TABLE IF NOT EXISTS users (
     key_value TEXT,
     login_date TEXT,
     expiry_date TEXT,
+    expiry_days INTEGER DEFAULT 0,
+    max_devices INTEGER DEFAULT 1,
     is_banned INTEGER DEFAULT 0,
     used_count INTEGER DEFAULT 0,
     total_analysis INTEGER DEFAULT 0,
     total_patches INTEGER DEFAULT 0,
-    last_activity TEXT
+    total_apk_patches INTEGER DEFAULT 0,
+    last_activity TEXT,
+    registered_date TEXT
 )''')
 
 # Keys Table
 c.execute('''CREATE TABLE IF NOT EXISTS keys (
     key TEXT PRIMARY KEY,
     type TEXT,
+    expiry_days INTEGER,
+    max_devices INTEGER,
     created_by INTEGER,
     created_at TEXT,
     used_by INTEGER,
-    used_at TEXT
+    used_at TEXT,
+    is_blacklisted INTEGER DEFAULT 0
 )''')
 
 # Logs Table
@@ -118,6 +124,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs (
     action TEXT,
     detail TEXT,
     target TEXT,
+    ip_address TEXT,
     timestamp TEXT
 )''')
 
@@ -127,8 +134,13 @@ c.execute('''CREATE TABLE IF NOT EXISTS analysis_history (
     user_id INTEGER,
     file_name TEXT,
     file_hash TEXT,
-    analysis_data TEXT,
-    dump_path TEXT,
+    file_size INTEGER,
+    architecture TEXT,
+    firebase_urls TEXT,
+    api_keys TEXT,
+    flags TEXT,
+    strings_count INTEGER,
+    json_count INTEGER,
     timestamp TEXT
 )''')
 
@@ -144,11 +156,16 @@ c.execute('''CREATE TABLE IF NOT EXISTS patches_history (
     timestamp TEXT
 )''')
 
-# Blacklisted Keys Table
-c.execute('''CREATE TABLE IF NOT EXISTS blacklisted_keys (
-    key TEXT PRIMARY KEY,
-    reason TEXT,
-    created_at TEXT
+# APK Patches History Table
+c.execute('''CREATE TABLE IF NOT EXISTS apk_patches_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    original_file TEXT,
+    patched_file TEXT,
+    original_hash TEXT,
+    patched_hash TEXT,
+    so_files_patched INTEGER,
+    timestamp TEXT
 )''')
 
 # Settings Table
@@ -157,11 +174,18 @@ c.execute('''CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 )''')
 
+# Blacklisted Users Table
+c.execute('''CREATE TABLE IF NOT EXISTS blacklisted_users (
+    user_id INTEGER PRIMARY KEY,
+    reason TEXT,
+    created_at TEXT
+)''')
+
 conn.commit()
 
-# =============================================
+# ============================================================
 # FIREBASE HELPERS
-# =============================================
+# ============================================================
 def fb_get(path: str) -> Optional[dict]:
     try:
         r = requests.get(f"{FIREBASE_URL}/{path}.json", timeout=10)
@@ -186,17 +210,9 @@ def fb_patch(path: str, data: dict) -> bool:
         logger.error(f"Firebase PATCH error: {e}")
         return False
 
-def fb_delete(path: str) -> bool:
-    try:
-        r = requests.delete(f"{FIREBASE_URL}/{path}.json", timeout=10)
-        return r.status_code in [200, 204]
-    except Exception as e:
-        logger.error(f"Firebase DELETE error: {e}")
-        return False
-
-# =============================================
+# ============================================================
 # TIME HELPERS
-# =============================================
+# ============================================================
 def now_ist():
     try:
         return datetime.now(IST)
@@ -204,16 +220,10 @@ def now_ist():
         return datetime.now()
 
 def fmt_ist(dt):
-    return dt.strftime("%d-%m-%Y %H:%M IST")
+    return dt.strftime("%d-%b-%Y %I:%M %p IST")
 
-def get_expiry(key_type: str) -> str:
-    days = {
-        'member': 30,
-        'pro': 60,
-        'vip': 90,
-        'lifetime': 3650
-    }.get(key_type, 30)
-    return (now_ist() + timedelta(days=days)).isoformat()
+def fmt_date_short(dt):
+    return dt.strftime("%d-%b-%Y")
 
 def days_left(expiry_str: str) -> str:
     if not expiry_str:
@@ -227,15 +237,19 @@ def days_left(expiry_str: str) -> str:
     except:
         return "N/A"
 
-# =============================================
+def get_expiry_from_days(days: int) -> str:
+    return (now_ist() + timedelta(days=days)).isoformat()
+
+# ============================================================
 # DATABASE FUNCTIONS
-# =============================================
-def log_action(user_id: int, action: str, detail: str = "", target: str = ""):
+# ============================================================
+def log_action(user_id: int, action: str, detail: str = "", target: str = "", ip: str = ""):
     c.execute(
-        "INSERT INTO logs (user_id, action, detail, target, timestamp) VALUES (?, ?, ?, ?, ?)",
-        (user_id, action, detail, target, now_ist().isoformat())
+        "INSERT INTO logs (user_id, action, detail, target, ip_address, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, action, detail, target, ip, now_ist().isoformat())
     )
     conn.commit()
+    # Also log to Firebase
     fb_put(f"logs/{user_id}_{int(time.time())}", {
         'user_id': user_id,
         'action': action,
@@ -249,22 +263,23 @@ def get_user(user_id: int):
     return c.fetchone()
 
 def create_user(user_id: int, username: str):
+    now = now_ist().isoformat()
     c.execute(
-        "INSERT INTO users (user_id, username, key_type, key_value, login_date, expiry_date, last_activity) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, username, 'inactive', None, now_ist().isoformat(), None, now_ist().isoformat())
+        """INSERT INTO users 
+        (user_id, username, key_type, key_value, login_date, expiry_date, last_activity, registered_date) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, username, 'inactive', None, now, None, now, now)
     )
     conn.commit()
     fb_put(f"users/{user_id}", {
         'username': username,
         'key_type': 'inactive',
         'key_value': None,
-        'login_date': now_ist().isoformat(),
+        'login_date': now,
         'expiry_date': None,
         'is_banned': 0,
         'used_count': 0,
-        'total_analysis': 0,
-        'total_patches': 0,
-        'last_activity': now_ist().isoformat()
+        'registered_date': now
     })
     log_action(user_id, "REGISTER", "inactive")
     return True
@@ -295,26 +310,48 @@ def update_user_activity(user_id: int):
         'last_activity': now_ist().isoformat()
     })
 
-# =============================================
+def update_user_analysis_count(user_id: int):
+    c.execute("UPDATE users SET total_analysis = total_analysis + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def update_user_patch_count(user_id: int):
+    c.execute("UPDATE users SET total_patches = total_patches + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def update_user_apk_patch_count(user_id: int):
+    c.execute("UPDATE users SET total_apk_patches = total_apk_patches + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+# ============================================================
 # REDEEM KEY SYSTEM
-# =============================================
+# ============================================================
 def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     key = key.upper().strip()
     
+    # Check if user is blacklisted
+    c.execute("SELECT * FROM blacklisted_users WHERE user_id=?", (user_id,))
+    if c.fetchone():
+        return False, "❌ You are blacklisted from using keys"
+    
     # Check if key is blacklisted
-    c.execute("SELECT * FROM blacklisted_keys WHERE key=?", (key,))
+    c.execute("SELECT * FROM keys WHERE key=? AND is_blacklisted=1", (key,))
     if c.fetchone():
         return False, "❌ This key has been blacklisted"
     
     # STEP 1: Check Firebase
     fb_data = fb_get(f"keys/{key}")
     if fb_data and not fb_data.get('used_by'):
-        key_type = fb_data.get('type', 'member')
-        expiry = get_expiry(key_type)
+        key_type = fb_data.get('type', 'custom')
+        expiry_days = fb_data.get('expiry_days', 30)
+        max_devices = fb_data.get('max_devices', 1)
+        
+        expiry = get_expiry_from_days(expiry_days)
         
         c.execute(
-            "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
-            (key_type, key, expiry, now_ist().isoformat(), user_id)
+            """UPDATE users SET 
+            key_type=?, key_value=?, expiry_date=?, login_date=?, expiry_days=?, max_devices=? 
+            WHERE user_id=?""",
+            (key_type, key, expiry, now_ist().isoformat(), expiry_days, max_devices, user_id)
         )
         conn.commit()
         
@@ -324,8 +361,10 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         })
         
         c.execute(
-            "INSERT OR REPLACE INTO keys (key, type, created_by, created_at, used_by, used_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (key, key_type, 0, now_ist().isoformat(), user_id, now_ist().isoformat())
+            """INSERT OR REPLACE INTO keys 
+            (key, type, expiry_days, max_devices, created_by, created_at, used_by, used_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (key, key_type, expiry_days, max_devices, 0, now_ist().isoformat(), user_id, now_ist().isoformat())
         )
         conn.commit()
         
@@ -333,22 +372,33 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
             'key_type': key_type,
             'key_value': key,
             'expiry_date': expiry,
-            'login_date': now_ist().isoformat()
+            'login_date': now_ist().isoformat(),
+            'expiry_days': expiry_days,
+            'max_devices': max_devices
         })
         
         log_action(user_id, "REDEEM_FIREBASE", f"{key_type}:{key}")
-        return True, f"✅ Key redeemed!\nType: {key_type}\nExpires: {expiry[:10]}"
+        return True, f"""✅ Key Redeemed Successfully!
+        
+📦 Type: {key_type}
+📅 Expires: {expiry[:10]}
+📊 Days: {expiry_days}
+📱 Max Devices: {max_devices}"""
     
     # STEP 2: Check SQLite
-    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL", (key,))
+    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL AND is_blacklisted=0", (key,))
     key_data = c.fetchone()
     if key_data:
         key_type = key_data[1]
-        expiry = get_expiry(key_type)
+        expiry_days = key_data[2] or 30
+        max_devices = key_data[3] or 1
+        expiry = get_expiry_from_days(expiry_days)
         
         c.execute(
-            "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
-            (key_type, key, expiry, now_ist().isoformat(), user_id)
+            """UPDATE users SET 
+            key_type=?, key_value=?, expiry_date=?, login_date=?, expiry_days=?, max_devices=? 
+            WHERE user_id=?""",
+            (key_type, key, expiry, now_ist().isoformat(), expiry_days, max_devices, user_id)
         )
         c.execute("UPDATE keys SET used_by=?, used_at=? WHERE key=?", (user_id, now_ist().isoformat(), key))
         conn.commit()
@@ -357,7 +407,9 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
             'key_type': key_type,
             'key_value': key,
             'expiry_date': expiry,
-            'login_date': now_ist().isoformat()
+            'login_date': now_ist().isoformat(),
+            'expiry_days': expiry_days,
+            'max_devices': max_devices
         })
         fb_patch(f"keys/{key}", {
             'used_by': user_id,
@@ -365,14 +417,19 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         })
         
         log_action(user_id, "REDEEM_SQLITE", f"{key_type}:{key}")
-        return True, f"✅ Key redeemed!\nType: {key_type}\nExpires: {expiry[:10]}"
+        return True, f"""✅ Key Redeemed Successfully!
+        
+📦 Type: {key_type}
+📅 Expires: {expiry[:10]}
+📊 Days: {expiry_days}
+📱 Max Devices: {max_devices}"""
     
     log_action(user_id, "REDEEM_FAILED", key)
     return False, "❌ Invalid or already used key"
 
-# =============================================
+# ============================================================
 # .SO ANALYSIS ENGINE
-# =============================================
+# ============================================================
 class SOAnalyzer:
     def __init__(self, file_path: str):
         self.file_path = file_path
@@ -392,7 +449,9 @@ class SOAnalyzer:
             'offsets': {},
             'functions': [],
             'hex_dump': {},
-            'hash': hashlib.md5(open(file_path, 'rb').read()).hexdigest()
+            'hash': hashlib.md5(open(file_path, 'rb').read()).hexdigest(),
+            'packer': 'None',
+            'sections': []
         }
         self._analyze()
     
@@ -410,6 +469,9 @@ class SOAnalyzer:
                     self.result['architecture'] = 'ARM64'
                 else:
                     self.result['architecture'] = 'Unknown'
+                
+                # Try to detect sections
+                self._detect_sections()
             
             self.text_data = self.data.decode('utf-8', errors='ignore')
             
@@ -433,6 +495,9 @@ class SOAnalyzer:
                 r'enable_logging\s*=\s*([0-9]+)',
                 r'ssl_pinning\s*=\s*([0-9]+)',
                 r'root_check\s*=\s*([0-9]+)',
+                r'isDeviceRooted\s*=\s*([0-9]+)',
+                r'isRooted\s*=\s*([0-9]+)',
+                r'isMagiskInstalled\s*=\s*([0-9]+)',
             ]
             for pattern in flag_patterns:
                 matches = re.findall(pattern, self.text_data)
@@ -453,7 +518,7 @@ class SOAnalyzer:
                 except:
                     pass
             
-            # Find offsets
+            # Find offsets for key items
             for url in self.result['firebase_urls']:
                 idx = self.text_data.find(url)
                 if idx != -1:
@@ -464,9 +529,9 @@ class SOAnalyzer:
                 if idx != -1:
                     self.result['offsets'][key] = hex(idx)
             
-            # Extract function names (simple)
+            # Extract function names
             func_pattern = r'[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*\{'
-            self.result['functions'] = list(set(re.findall(func_pattern, self.text_data)))[:20]
+            self.result['functions'] = list(set(re.findall(func_pattern, self.text_data)))[:30]
             
             # Hex dump of first 256 bytes
             self.result['hex_dump'] = {
@@ -474,59 +539,83 @@ class SOAnalyzer:
                 'hex': binascii.hexlify(self.data[:256]).decode('utf-8')
             }
             
+            # Detect packer
+            self._detect_packer()
+            
         except Exception as e:
             self.result['error'] = str(e)
     
+    def _detect_sections(self):
+        """Detect ELF sections"""
+        try:
+            # Simple section detection from strings
+            section_pattern = r'\.(text|data|rodata|bss|init|fini|got|plt|dynsym|dynstr|hash|gnu\.hash)'
+            sections = re.findall(section_pattern, self.text_data)
+            self.result['sections'] = list(set(sections))
+        except:
+            pass
+    
+    def _detect_packer(self):
+        """Detect if file is packed"""
+        packer_patterns = [
+            (r'UPX', 'UPX'),
+            (r'MPRESS', 'MPRESS'),
+            (r'ASPack', 'ASPack'),
+            (r'PECompact', 'PECompact'),
+            (r'Themida', 'Themida'),
+            (r'VMProtect', 'VMProtect'),
+            (r'Enigma', 'Enigma'),
+        ]
+        for pattern, name in packer_patterns:
+            if re.search(pattern, self.text_data, re.IGNORECASE):
+                self.result['packer'] = name
+                break
+    
     def get_report(self) -> str:
         r = self.result
-        report = f"📊 **Analysis Report**\n\n"
-        report += f"📁 File: `{r['file_name']}`\n"
-        report += f"📏 Size: {r['size']:,} bytes\n"
-        report += f"🏗️ Architecture: {r['architecture']}\n"
-        report += f"🔑 Hash: `{r['hash'][:16]}...`\n\n"
-        
-        report += f"📡 **Firebase URLs** ({len(r['firebase_urls'])}):\n"
+        report = f"""
+📊 ANALYSIS REPORT
+═══════════════════════════════════════
+
+📁 File: {r['file_name']}
+📏 Size: {r['size']:,} bytes
+🏗️ Architecture: {r['architecture']}
+🔑 Hash: {r['hash'][:16]}...
+📦 Packer: {r['packer']}
+
+📡 FIREBASE URLs ({len(r['firebase_urls'])}):
+"""
         for url in r['firebase_urls'][:5]:
             off = r['offsets'].get(url, 'Unknown')
-            report += f"• `{url}` (offset: {off})\n"
+            report += f"  • {url} (offset: {off})\n"
         if len(r['firebase_urls']) > 5:
-            report += f"• ... and {len(r['firebase_urls']) - 5} more\n"
-        report += "\n"
+            report += f"  • ... and {len(r['firebase_urls']) - 5} more\n"
         
-        report += f"🔑 **API Keys** ({len(r['api_keys'])}):\n"
+        report += f"""
+🔑 API KEYS ({len(r['api_keys'])}):
+"""
         for key in r['api_keys'][:5]:
             off = r['offsets'].get(key, 'Unknown')
-            report += f"• `{key}` (offset: {off})\n"
+            report += f"  • {key} (offset: {off})\n"
         if len(r['api_keys']) > 5:
-            report += f"• ... and {len(r['api_keys']) - 5} more\n"
-        report += "\n"
+            report += f"  • ... and {len(r['api_keys']) - 5} more\n"
         
-        report += f"🚩 **Flags** ({len(r['flags'])}):\n"
+        report += f"""
+🚩 FLAGS ({len(r['flags'])}):
+"""
         for flag, value in r['flags'].items():
-            report += f"• {flag} = `{value}`\n"
+            report += f"  • {flag} = {value}\n"
         if not r['flags']:
-            report += "• None found\n"
-        report += "\n"
+            report += "  • None found\n"
         
-        report += f"📄 **JSON Structures** ({len(r['json_structures'])}):\n"
-        if r['json_structures']:
-            report += f"• Found {len(r['json_structures'])} JSON objects\n"
-        else:
-            report += "• None found\n"
-        report += "\n"
-        
-        report += f"📝 **Strings** ({len(r['strings'])}):\n"
-        report += f"• Extracted {len(r['strings'])} strings\n"
-        report += f"• Sample: `{r['strings'][0] if r['strings'] else 'None'}`\n"
-        report += "\n"
-        
-        report += f"🔧 **Functions** ({len(r['functions'])}):\n"
-        if r['functions']:
-            for f in r['functions'][:5]:
-                report += f"• `{f[:50]}`\n"
-        else:
-            report += "• None found\n"
-        
+        report += f"""
+📄 JSON STRUCTURES: {len(r['json_structures'])}
+📝 STRINGS: {len(r['strings'])}
+🔧 FUNCTIONS: {len(r['functions'])}
+📂 SECTIONS: {', '.join(r['sections']) if r['sections'] else 'None'}
+
+💡 Use /dump to get full dump.txt file
+"""
         return report
     
     def generate_dump_txt(self) -> str:
@@ -538,6 +627,7 @@ class SOAnalyzer:
         lines.append(f"Size: {self.result['size']:,} bytes")
         lines.append(f"Architecture: {self.result['architecture']}")
         lines.append(f"Hash: {self.result['hash']}")
+        lines.append(f"Packer: {self.result['packer']}")
         lines.append(f"Analysis Date: {fmt_ist(now_ist())}")
         lines.append("")
         lines.append("=" * 60)
@@ -573,6 +663,12 @@ class SOAnalyzer:
             lines.append(f)
         lines.append("")
         lines.append("=" * 60)
+        lines.append("SECTIONS")
+        lines.append("=" * 60)
+        for s in self.result['sections']:
+            lines.append(s)
+        lines.append("")
+        lines.append("=" * 60)
         lines.append("STRINGS (First 100)")
         lines.append("=" * 60)
         for s in self.result['strings'][:100]:
@@ -590,9 +686,9 @@ class SOAnalyzer:
         lines.append("=" * 60)
         return '\n'.join(lines)
 
-# =============================================
+# ============================================================
 # PATCH ENGINE
-# =============================================
+# ============================================================
 class SOPatcher:
     def __init__(self, file_path: str):
         self.file_path = file_path
@@ -650,9 +746,92 @@ class SOPatcher:
         except Exception as e:
             return False, "", str(e)
 
-# =============================================
+# ============================================================
+# APK ROOT DETECTION BYPASS
+# ============================================================
+def bypass_root_detection(apk_path: str) -> Tuple[bool, Optional[str], str]:
+    """Automatically bypass root detection in APK"""
+    try:
+        output_dir = os.path.join(APK_DIR, f"patched_{int(time.time())}")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract APK
+        with zipfile.ZipFile(apk_path, 'r') as zip_ref:
+            zip_ref.extractall(output_dir)
+        
+        # Find .so files
+        so_files = []
+        for root, dirs, files in os.walk(output_dir):
+            for file in files:
+                if file.endswith('.so'):
+                    so_files.append(os.path.join(root, file))
+        
+        patched_count = 0
+        for so_file in so_files:
+            with open(so_file, 'rb') as f:
+                data = f.read()
+            
+            text_data = data.decode('utf-8', errors='ignore')
+            modified = False
+            
+            # Patch root detection patterns
+            patterns = [
+                (r'isDeviceRooted\s*=\s*[0-9]+', 'isDeviceRooted = 0'),
+                (r'isRooted\s*=\s*[0-9]+', 'isRooted = 0'),
+                (r'isMagiskInstalled\s*=\s*[0-9]+', 'isMagiskInstalled = 0'),
+                (r'root_check\s*=\s*[0-9]+', 'root_check = 0'),
+                (r'verify_root\s*=\s*[0-9]+', 'verify_root = 0'),
+                (r'checkRoot\s*=\s*[0-9]+', 'checkRoot = 0'),
+                (r'isDeviceRooted\(\)\s*\{[^}]*\}', 'isDeviceRooted() { return 0; }'),
+                (r'isRooted\(\)\s*\{[^}]*\}', 'isRooted() { return 0; }'),
+            ]
+            
+            for pattern, replacement in patterns:
+                new_text = re.sub(pattern, replacement, text_data, flags=re.DOTALL)
+                if new_text != text_data:
+                    text_data = new_text
+                    modified = True
+            
+            if modified:
+                with open(so_file, 'wb') as f:
+                    f.write(text_data.encode('utf-8', errors='ignore'))
+                patched_count += 1
+        
+        # Repack APK
+        output_apk = os.path.join(APK_DIR, f"patched_{os.path.basename(apk_path)}")
+        with zipfile.ZipFile(output_apk, 'w') as zipf:
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, output_dir)
+                    zipf.write(file_path, arcname)
+        
+        shutil.rmtree(output_dir)
+        
+        if patched_count > 0:
+            original_hash = hashlib.md5(open(apk_path, 'rb').read()).hexdigest()
+            patched_hash = hashlib.md5(open(output_apk, 'rb').read()).hexdigest()
+            
+            # Save to history
+            c.execute(
+                """INSERT INTO apk_patches_history 
+                (user_id, original_file, patched_file, original_hash, patched_hash, so_files_patched, timestamp) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (0, os.path.basename(apk_path), os.path.basename(output_apk), 
+                 original_hash, patched_hash, patched_count, now_ist().isoformat())
+            )
+            conn.commit()
+            
+            return True, output_apk, f"✅ Patched {patched_count} .so files\nOriginal: {original_hash[:16]}\nPatched: {patched_hash[:16]}"
+        else:
+            return False, None, "No root detection patterns found"
+            
+    except Exception as e:
+        return False, None, f"Error: {str(e)}"
+
+# ============================================================
 # FRIDA SCRIPT GENERATORS
-# =============================================
+# ============================================================
 def generate_frida_hook(function_name: str) -> str:
     return f'''// VTX DEX - Frida Hook for {function_name}
 Java.perform(function() {{
@@ -664,7 +843,9 @@ Java.perform(function() {{
         "com.example.app.FlagManager",
         "com.example.app.AuthManager",
         "com.example.app.SecurityManager",
-        "com.example.app.Utils"
+        "com.example.app.Utils",
+        "com.example.app.RootDetection",
+        "com.example.app.SafetyNet"
     ];
     
     for (var i = 0; i < targetClasses.length; i++) {{
@@ -678,7 +859,6 @@ Java.perform(function() {{
                     var result = this.{function_name}.apply(this, arguments);
                     console.log("[*] Return value: " + result);
                     
-                    // Modify return value
                     return result;
                 }};
                 console.log("[+] Hooked {function_name} in " + targetClasses[i]);
@@ -691,7 +871,7 @@ Java.perform(function() {{
     console.log("[*] Hook setup complete!");
 }});'''
 
-def generate_root_bypass() -> str:
+def generate_root_bypass_script() -> str:
     return '''// VTX DEX - Root Detection Bypass
 Java.perform(function() {
     console.log("[*] Loading root bypass...");
@@ -728,7 +908,7 @@ Java.perform(function() {
     console.log("[*] Root bypass loaded!");
 });'''
 
-def generate_antidebug_bypass() -> str:
+def generate_antidebug_script() -> str:
     return '''// VTX DEX - Anti-Debug Bypass
 Java.perform(function() {
     console.log("[*] Loading anti-debug bypass...");
@@ -760,7 +940,7 @@ Java.perform(function() {
     console.log("[*] Anti-debug bypass loaded!");
 });'''
 
-def generate_cert_pinning_bypass() -> str:
+def generate_cert_pinning_script() -> str:
     return '''// VTX DEX - Certificate Pinning Bypass
 Java.perform(function() {
     console.log("[*] Loading certificate pinning bypass...");
@@ -789,79 +969,20 @@ Java.perform(function() {
     console.log("[*] Certificate pinning bypass loaded!");
 });'''
 
-# =============================================
-# JSON TO SO REPACK
-# =============================================
-def json_to_so_repack(json_path: str, so_path: str) -> Tuple[bool, str, str]:
-    try:
-        with open(json_path, 'r') as f:
-            json_data = json.load(f)
-        
-        with open(so_path, 'rb') as f:
-            so_data = f.read()
-        
-        json_str = json.dumps(json_data)
-        json_bytes = json_str.encode('utf-8')
-        
-        # Add marker for extraction
-        marker = b'VTX_DEX_JSON_START'
-        end_marker = b'VTX_DEX_JSON_END'
-        
-        # Find a good place to inject (search for null bytes)
-        so_data = so_data + b'\x00\x00' + marker + json_bytes + end_marker + b'\x00\x00'
-        
-        output_path = os.path.join(PATCH_DIR, f"repacked_{os.path.basename(so_path)}")
-        with open(output_path, 'wb') as f:
-            f.write(so_data)
-        
-        return True, output_path, "JSON injected successfully"
-    except Exception as e:
-        return False, "", str(e)
-
-def extract_json_from_so(so_path: str) -> Tuple[bool, Any, str]:
-    try:
-        with open(so_path, 'rb') as f:
-            data = f.read()
-        
-        text_data = data.decode('utf-8', errors='ignore')
-        
-        # Look for marker
-        marker = 'VTX_DEX_JSON_START'
-        end_marker = 'VTX_DEX_JSON_END'
-        
-        if marker in text_data and end_marker in text_data:
-            start = text_data.index(marker) + len(marker)
-            end = text_data.index(end_marker)
-            json_str = text_data[start:end]
-            return True, json.loads(json_str), "JSON extracted from marker"
-        
-        # Fallback: find any JSON
-        json_pattern = r'\{[^{}]*\}'
-        for match in re.findall(json_pattern, text_data):
-            try:
-                return True, json.loads(match), "JSON structure found"
-            except:
-                pass
-        
-        return False, None, "No JSON found"
-    except Exception as e:
-        return False, None, str(e)
-
-# =============================================
+# ============================================================
 # BOT APPLICATION
-# =============================================
+# ============================================================
 app = Application.builder().token(TOKEN).build()
 
-# =============================================
-# CONVERSATION STATES
-# =============================================
-(WAITING_SO, WAITING_JSON, WAITING_PATCH_DATA, WAITING_ANALYZE) = range(4)
+# Conversation states
+WAITING_SO = 1
+WAITING_APK = 2
+WAITING_PATCH = 3
 
-# =============================================
+# ============================================================
 # COMMAND HANDLERS
-# =============================================
+# ============================================================
 
-# ----- START -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "unknown"
@@ -874,7 +995,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔑 Redeem Key", callback_data="redeem")],
         [InlineKeyboardButton("📊 Dashboard", url="https://mn-rohan.web.app")],
-        [InlineKeyboardButton("📄 Help", callback_data="help")],
+        [InlineKeyboardButton("📖 Help", callback_data="help")],
         [InlineKeyboardButton("💳 Buy", callback_data="buy")]
     ]
     
@@ -882,33 +1003,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key_type = user[2] if has_key else "None"
     expiry = user[5]
     left = days_left(expiry)
-    status = "✅ Active" if has_key and left != "Expired" else "❌ Inactive"
+    max_devices = user[8] if user[8] else 1
+    
+    welcome_msg = f"""
+╔═══════════════════════════════════════╗
+║           🗡️ VTX DEX BOT             ║
+║     Professional Reverse Engineering  ║
+║     Developer: {DEV_NAME}              ║
+╚═══════════════════════════════════════╝
+
+👤 User: @{username}
+🔑 Key Type: {key_type}
+📅 Login: {fmt_ist(now_ist())}
+⏳ Expires: {expiry[:10] if expiry else 'None'}
+📊 Days Left: {left}
+📱 Max Devices: {max_devices}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 Available Commands:
+
+🔐 AUTHENTICATION
+  /start      - Show this menu
+  /redeem     - Activate subscription key
+  /mykey      - Check key status
+
+🔧 ANALYSIS
+  /analyze    - Analyze .so file
+  /dump       - Generate dump.txt
+  /patch      - Patch .so file
+  /rootpatch  - Bypass root detection in APK
+
+🛡️ BYPASS TOOLS
+  /rootbypass - Generate root bypass script
+  /antidebug  - Generate anti-debug script
+  /pinning    - Generate SSL bypass script
+  /frida      - Generate Frida hook
+
+📊 INFORMATION
+  /help       - Show all commands
+  /buy        - Pricing information
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Need help? Contact: {DEV_NAME}
+"""
     
     await update.message.reply_text(
-        f"🗡️ **{BOT_NAME}**\n"
-        f"🔥 Developer: {DEV_NAME}\n\n"
-        f"👤 User: @{username}\n"
-        f"🔑 Key Type: `{key_type}`\n"
-        f"📅 Login: {fmt_ist(now_ist())}\n"
-        f"⏳ Expires: `{expiry[:10] if expiry else 'None'}`\n"
-        f"📊 Days Left: `{left}`\n"
-        f"📈 Status: {status}\n"
-        f"🔄 Used: `{user[7] if user[7] else 0}` times\n\n"
-        f"**Commands:**\n"
-        f"/start - Menu\n"
-        f"/redeem <key> - Activate\n"
-        f"/mykey - Check key\n"
-        f"/analyze - Analyze .so\n"
-        f"/patch - Patch .so\n"
-        f"/dump - Get dump.txt\n"
-        f"/json - Extract JSON\n"
-        f"/repack - Inject JSON\n"
-        f"/rootbypass - Root bypass\n"
-        f"/antidebug - Anti-debug\n"
-        f"/pinning - SSL bypass\n"
-        f"/frida <func> - Frida hook\n"
-        f"/help - Help\n"
-        f"/buy - Pricing",
+        welcome_msg,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     log_action(user_id, "START")
@@ -919,49 +1060,52 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     
     if not args:
-        await update.message.reply_text("❌ Usage: /redeem <KEY>")
+        await update.message.reply_text(
+            "❌ Usage: /redeem <KEY>\n"
+            "Example: /redeem ABC123XYZ\n\n"
+            "Contact {DEV_NAME} to purchase a key."
+        )
         return
     
     key = args[0].upper()
-    
-    # Check Firebase
-    try:
-        url = f"{FIREBASE_URL}/keys/{key}.json"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            key_data = response.json()
-            if key_data and not key_data.get('used_by'):
-                key_type = key_data.get('type', 'custom')
-                expiry_days = key_data.get('expiry_days', 30)
-                max_devices = key_data.get('max_devices', 1)
-                
-                expiry = (now_ist() + timedelta(days=expiry_days)).isoformat()
-                
-                c.execute(
-                    "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=?, max_devices=? WHERE user_id=?",
-                    (key_type, key, expiry, now_ist().isoformat(), max_devices, user_id)
-                )
-                conn.commit()
-                
-                requests.patch(
-                    f"{FIREBASE_URL}/keys/{key}.json",
-                    json={'used_by': user_id, 'used_at': now_ist().isoformat()}
-                )
-                
-                await update.message.reply_text(
-                    f"✅ **Key Redeemed!**\n\n"
-                    f"Type: `{key_type}`\n"
-                    f"Expires: `{expiry[:10]}`\n"
-                    f"Days: `{expiry_days}`\n"
-                    f"Max Devices: `{max_devices}`"
-                )
-                return
-    except Exception as e:
-        print(f"Firebase error: {e}")
-    
-    await update.message.reply_text("❌ Invalid or already used key")
+    success, msg = redeem_key(user_id, key)
+    await update.message.reply_text(msg)
+    if success:
+        update_user_activity(user_id)
 
-# ----- ANALYZE -----
+async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        await update.message.reply_text("❌ Not registered. Use /start")
+        return
+    
+    expiry = user[5]
+    left = days_left(expiry)
+    max_devices = user[8] if user[8] else 1
+    
+    key_info = f"""
+🔑 KEY INFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📦 Key Type: {user[2]}
+🔑 Key Value: {user[3] or 'None'}
+📅 Login Date: {user[4][:10] if user[4] else 'N/A'}
+⏳ Expiry Date: {expiry[:10] if expiry else 'N/A'}
+📊 Days Left: {left}
+📱 Max Devices: {max_devices}
+🔄 Used Count: {user[7] if user[7] else 0} times
+🔍 Analysis: {user[9] if user[9] else 0}
+🔧 Patches: {user[10] if user[10] else 0}
+📱 APK Patches: {user[11] if user[11] else 0}
+⛔ Banned: {'Yes' if user[6] else 'No'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Last Activity: {user[12][:10] if user[12] else 'N/A'}
+"""
+    await update.message.reply_text(key_info)
+    update_user_activity(user_id)
+
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
@@ -970,22 +1114,39 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await update.message.reply_text(
-        "📤 **Upload .so file**\n\n"
-        "Send the `.so` file you want to analyze.\n"
-        "Supported: ARM32, ARM64, x86, x64\n\n"
+        "📤 Upload .so file for analysis\n\n"
         "I will extract:\n"
         "• Firebase URLs\n"
-        "• API Keys\n"
-        "• Flags\n"
-        "• Strings\n"
+        "• API Keys (AIza...)\n"
+        "• Flags (verify_active, access_hours, etc.)\n"
+        "• All readable strings\n"
         "• JSON structures\n"
-        "• Functions\n"
-        "• Hex dump"
+        "• Function names\n"
+        "• ELF sections\n"
+        "• Packer detection\n\n"
+        "Supported: ARM32, ARM64, x86, x64"
     )
     context.user_data['action'] = 'analyze'
     return WAITING_SO
 
-# ----- PATCH -----
+async def dump(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    access, msg = check_access(user_id)
+    if not access:
+        await update.message.reply_text(f"⛔ {msg}")
+        return
+    
+    await update.message.reply_text(
+        "📤 Upload .so file to generate dump.txt\n\n"
+        "The dump will contain:\n"
+        "• All extracted data\n"
+        "• Complete strings list\n"
+        "• Hex dump\n"
+        "• Full analysis report"
+    )
+    context.user_data['action'] = 'dump'
+    return WAITING_SO
+
 async def patch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
@@ -1001,25 +1162,24 @@ async def patch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'new': args[1]
         }
         await update.message.reply_text(
-            f"📤 Upload `.so` file to patch\n"
-            f"Changing: `{args[0]}` → `{args[1]}`"
+            f"📤 Upload .so file to patch\n"
+            f"Changing: {args[0]} → {args[1]}"
         )
         context.user_data['action'] = 'patch'
         return WAITING_SO
     
     await update.message.reply_text(
-        "🔧 **Patch Options**\n\n"
-        "Send a `.so` file and tell me what to patch:\n\n"
-        "• `/patch <old_url> <new_url>` - URL patch\n"
-        "• `/patch_api <old_key> <new_key>` - API key patch\n"
-        "• `/patch_flag <flag> <value>` - Flag patch\n"
-        "• `/patch_string <old> <new>` - String patch\n\n"
-        "Example: `/patch https://old.com https://new.com`"
+        "🔧 PATCH OPTIONS\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "1. URL Patch:\n"
+        "   /patch <old_url> <new_url>\n"
+        "   Example: /patch https://old.com https://new.com\n\n"
+        "2. Upload .so file\n"
+        "   I'll help you patch it interactively"
     )
     context.user_data['action'] = 'patch'
 
-# ----- DUMP -----
-async def dump(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rootpatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
     if not access:
@@ -1027,51 +1187,18 @@ async def dump(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await update.message.reply_text(
-        "📤 Upload `.so` file to generate dump.txt\n\n"
-        "The dump will contain all extracted data:\n"
-        "• URLs, API keys, flags\n"
-        "• All strings\n"
-        "• JSON structures\n"
-        "• Hex dump\n"
-        "• Function list"
+        "📤 Upload APK file to bypass root detection\n\n"
+        "I will:\n"
+        "• Extract APK\n"
+        "• Find all .so files\n"
+        "• Remove root detection patterns\n"
+        "• Repack APK\n"
+        "• Return patched APK\n\n"
+        "⚠️ Works for all APKs (Universal)"
     )
-    context.user_data['action'] = 'dump'
-    return WAITING_SO
+    context.user_data['action'] = 'rootpatch'
+    return WAITING_APK
 
-# ----- JSON -----
-async def json_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    access, msg = check_access(user_id)
-    if not access:
-        await update.message.reply_text(f"⛔ {msg}")
-        return
-    
-    await update.message.reply_text(
-        "📤 Upload `.so` file to extract JSON structures.\n"
-        "I will find and extract any JSON embedded in the file."
-    )
-    context.user_data['action'] = 'json'
-    return WAITING_SO
-
-# ----- REPACK -----
-async def repack(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    access, msg = check_access(user_id)
-    if not access:
-        await update.message.reply_text(f"⛔ {msg}")
-        return
-    
-    await update.message.reply_text(
-        "📤 **Repack JSON into .so**\n\n"
-        "Send the `.so` file and `.json` file.\n"
-        "I will inject the JSON into the .so file.\n\n"
-        "Send `.so` file first, then `.json` file."
-    )
-    context.user_data['action'] = 'repack'
-    context.user_data['repack_step'] = 'so'
-    return WAITING_SO
-
-# ----- ROOTBYPASS -----
 async def rootbypass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
@@ -1079,17 +1206,15 @@ async def rootbypass(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⛔ {msg}")
         return
     
-    script = generate_root_bypass()
+    script = generate_root_bypass_script()
     await update.message.reply_document(
         document=script.encode(),
         filename="root_bypass.js",
-        caption="🔓 **Root Detection Bypass**\n\n"
-                "Inject with: `frida -U -f com.example.app -l root_bypass.js`"
+        caption="🔓 Root Detection Bypass Script\n\nInject with:\nfrida -U -f com.example.app -l root_bypass.js"
     )
     log_action(user_id, "ROOTBYPASS")
     update_user_activity(user_id)
 
-# ----- ANTIDEBUG -----
 async def antidebug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
@@ -1097,17 +1222,15 @@ async def antidebug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⛔ {msg}")
         return
     
-    script = generate_antidebug_bypass()
+    script = generate_antidebug_script()
     await update.message.reply_document(
         document=script.encode(),
         filename="antidebug.js",
-        caption="🛡️ **Anti-Debug Bypass**\n\n"
-                "Inject with: `frida -U -f com.example.app -l antidebug.js`"
+        caption="🛡️ Anti-Debug Bypass Script\n\nInject with:\nfrida -U -f com.example.app -l antidebug.js"
     )
     log_action(user_id, "ANTIDEBUG")
     update_user_activity(user_id)
 
-# ----- PINNING -----
 async def pinning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
@@ -1115,17 +1238,15 @@ async def pinning(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⛔ {msg}")
         return
     
-    script = generate_cert_pinning_bypass()
+    script = generate_cert_pinning_script()
     await update.message.reply_document(
         document=script.encode(),
         filename="pinning_bypass.js",
-        caption="🔓 **Certificate Pinning Bypass**\n\n"
-                "Inject with: `frida -U -f com.example.app -l pinning_bypass.js`"
+        caption="🔓 SSL Pinning Bypass Script\n\nInject with:\nfrida -U -f com.example.app -l pinning_bypass.js"
     )
     log_action(user_id, "PINNING")
     update_user_activity(user_id)
 
-# ----- FRIDA -----
 async def frida_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
@@ -1147,52 +1268,54 @@ async def frida_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         document=script.encode(),
         filename=f"hook_{func}.js",
-        caption=f"🔫 **Frida Hook for `{func}`**\n\n"
-                f"Inject with: `frida -U -f com.example.app -l hook_{func}.js`"
+        caption=f"🔫 Frida Hook for '{func}'\n\nInject with:\nfrida -U -f com.example.app -l hook_{func}.js"
     )
     log_action(user_id, "FRIDA", func)
     update_user_activity(user_id)
 
-# ----- BUY -----
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"💳 **Subscription Plans**\n\n"
-        f"🔥 **Member** — $10 (30 Days)\n"
-        f"🔥 **Pro Member** — $25 (60 Days)\n"
-        f"🔥 **VIP Member** — $50 (90 Days)\n"
-        f"🔥 **Lifetime** — $100 (Forever)\n\n"
-        f"Contact {DEV_NAME} to purchase.\n"
-        f"Or use /redeem if you have a key."
+        "💳 SUBSCRIPTION PLANS\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔹 Member — $10 (30 Days)\n"
+        "🔸 Pro Member — $25 (60 Days)\n"
+        "🔹 VIP Member — $50 (90 Days)\n"
+        "🔸 Lifetime — $100 (Forever)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📌 Contact: {DEV_NAME}\n"
+        "💳 Payment: UPI / Crypto / PayPal\n\n"
+        "After payment, you'll receive a key.\n"
+        "Use /redeem <key> to activate."
     )
 
-# ----- HELP -----
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"📖 **{BOT_NAME} Commands**\n\n"
-        f"🔑 **Authentication**\n"
-        f"/start - Show menu\n"
-        f"/redeem <key> - Activate key\n"
-        f"/mykey - Check key status\n\n"
-        f"🔧 **Analysis**\n"
-        f"/analyze - Analyze .so file\n"
-        f"/patch - Patch .so file\n"
-        f"/dump - Generate dump.txt\n"
-        f"/json - Extract JSON from .so\n"
-        f"/repack - Inject JSON into .so\n\n"
-        f"🛡️ **Bypass Tools**\n"
-        f"/rootbypass - Root detection bypass\n"
-        f"/antidebug - Anti-debug bypass\n"
-        f"/pinning - SSL pinning bypass\n"
-        f"/frida <func> - Frida hook\n\n"
-        f"📊 **Info**\n"
-        f"/help - Show this\n"
-        f"/buy - Pricing info\n\n"
-        f"🔥 Developer: {DEV_NAME}"
+        "📖 VTX DEX — COMPLETE COMMANDS\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔐 AUTHENTICATION\n"
+        "  /start      - Show main menu\n"
+        "  /redeem     - Activate subscription key\n"
+        "  /mykey      - Check key status\n\n"
+        "🔧 ANALYSIS\n"
+        "  /analyze    - Analyze .so file\n"
+        "  /dump       - Generate dump.txt\n"
+        "  /patch      - Patch .so file\n"
+        "  /rootpatch  - Bypass root detection in APK\n\n"
+        "🛡️ BYPASS TOOLS\n"
+        "  /rootbypass - Generate root bypass script\n"
+        "  /antidebug  - Generate anti-debug script\n"
+        "  /pinning    - Generate SSL bypass script\n"
+        "  /frida      - Generate Frida hook\n\n"
+        "📊 INFORMATION\n"
+        "  /help       - Show this\n"
+        "  /buy        - Pricing info\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👤 Developer: {DEV_NAME}"
     )
 
-# =============================================
+# ============================================================
 # FILE HANDLERS
-# =============================================
+# ============================================================
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1208,7 +1331,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = doc.file_name or "unknown"
     file_ext = os.path.splitext(file_name)[1].lower()
     
-    # Download file
     file_obj = await context.bot.get_file(doc.file_id)
     file_path = os.path.join(TEMP_DIR, f"{user_id}_{file_name}")
     await file_obj.download_to_drive(file_path)
@@ -1217,42 +1339,24 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if action == 'analyze':
         await process_analyze(update, context, file_path)
-    elif action == 'patch':
-        await process_patch(update, context, file_path)
     elif action == 'dump':
         await process_dump(update, context, file_path)
-    elif action == 'json':
-        await process_json(update, context, file_path)
-    elif action == 'repack':
-        step = context.user_data.get('repack_step', 'so')
-        if step == 'so':
-            context.user_data['so_file'] = file_path
-            context.user_data['repack_step'] = 'json'
-            await update.message.reply_text(
-                "✅ .so file received.\n"
-                "Now send the `.json` file to inject."
-            )
-        else:
-            so_path = context.user_data.get('so_file')
-            if so_path and os.path.exists(so_path):
-                await process_repack(update, context, so_path, file_path)
-                del context.user_data['so_file']
-                del context.user_data['repack_step']
-            else:
-                await update.message.reply_text("❌ .so file not found. Please start again.")
-                os.remove(file_path)
+    elif action == 'patch':
+        await process_patch(update, context, file_path)
+    elif action == 'rootpatch':
+        await process_rootpatch(update, context, file_path)
     else:
         await update.message.reply_text(
-            "⚠️ Use a command first:\n"
-            "/analyze, /patch, /dump, /json, /repack"
+            "❌ Use a command first:\n"
+            "/analyze, /dump, /patch, /rootpatch"
         )
         os.remove(file_path)
     
     context.user_data['action'] = ''
 
-# =============================================
+# ============================================================
 # PROCESS FUNCTIONS
-# =============================================
+# ============================================================
 
 async def process_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str):
     user_id = update.effective_user.id
@@ -1264,93 +1368,29 @@ async def process_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         os.remove(file_path)
         return
     
-    # Send report
     report = analyzer.get_report()
-    await update.message.reply_text(report, parse_mode='Markdown')
-    
-    # Generate and send dump
-    dump_text = analyzer.generate_dump_txt()
-    dump_path = os.path.join(DUMP_DIR, f"dump_{user_id}_{analyzer.file_name}.txt")
-    with open(dump_path, 'w', encoding='utf-8') as f:
-        f.write(dump_text)
-    
-    await update.message.reply_document(
-        document=open(dump_path, 'rb'),
-        filename=f"dump_{analyzer.file_name}.txt",
-        caption="📄 **Full dump.txt**"
-    )
+    await update.message.reply_text(report)
     
     # Save to history
     c.execute(
-        "INSERT INTO analysis_history (user_id, file_name, file_hash, analysis_data, dump_path, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, analyzer.file_name, analyzer.result['hash'], json.dumps(analyzer.result), dump_path, now_ist().isoformat())
+        """INSERT INTO analysis_history 
+        (user_id, file_name, file_hash, file_size, architecture, firebase_urls, api_keys, flags, strings_count, json_count, timestamp) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, analyzer.file_name, analyzer.result['hash'], analyzer.file_size,
+         analyzer.result['architecture'],
+         json.dumps(analyzer.result['firebase_urls']),
+         json.dumps(analyzer.result['api_keys']),
+         json.dumps(analyzer.result['flags']),
+         len(analyzer.result['strings']),
+         len(analyzer.result['json_structures']),
+         now_ist().isoformat())
     )
     conn.commit()
     
-    # Update user stats
-    c.execute("UPDATE users SET total_analysis = total_analysis + 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    
+    update_user_analysis_count(user_id)
     log_action(user_id, "ANALYZE", analyzer.file_name)
     update_user_activity(user_id)
-    
     os.remove(file_path)
-    os.remove(dump_path)
-
-async def process_patch(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str):
-    user_id = update.effective_user.id
-    patch_data = context.user_data.get('patch_data', {})
-    
-    if not patch_data:
-        await update.message.reply_text("❌ Use /patch <old> <new> first")
-        os.remove(file_path)
-        return
-    
-    await update.message.reply_text("🔧 Patching .so file...")
-    
-    patcher = SOPatcher(file_path)
-    patcher.load()
-    
-    if patch_data.get('type') == 'url':
-        patcher.patch_url(patch_data['old'], patch_data['new'])
-    elif patch_data.get('type') == 'api':
-        patcher.patch_api_key(patch_data['old'], patch_data['new'])
-    elif patch_data.get('type') == 'flag':
-        patcher.patch_flag(patch_data['flag'], patch_data['value'])
-    elif patch_data.get('type') == 'string':
-        patcher.patch_string(patch_data['old'], patch_data['new'])
-    
-    success, output_path, patched_hash = patcher.save()
-    
-    if success:
-        await update.message.reply_document(
-            document=open(output_path, 'rb'),
-            filename=f"patched_{os.path.basename(file_path)}",
-            caption=f"✅ **Patch applied!**\n\n"
-                    f"Original Hash: `{patcher.original_hash[:16]}`\n"
-                    f"Patched Hash: `{patched_hash[:16]}`\n"
-                    f"Changes:\n" + '\n'.join(f"• {c}" for c in patcher.changes)
-        )
-        
-        # Save to history
-        c.execute(
-            "INSERT INTO patches_history (user_id, original_file, patched_file, original_hash, patched_hash, changes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, os.path.basename(file_path), os.path.basename(output_path), patcher.original_hash, patched_hash, json.dumps(patcher.changes), now_ist().isoformat())
-        )
-        conn.commit()
-        
-        c.execute("UPDATE users SET total_patches = total_patches + 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        
-        log_action(user_id, "PATCH", str(patcher.changes))
-        update_user_activity(user_id)
-        
-        os.remove(output_path)
-    else:
-        await update.message.reply_text(f"❌ Patch failed: {patched_hash}")
-    
-    os.remove(file_path)
-    context.user_data['patch_data'] = {}
 
 async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str):
     user_id = update.effective_user.id
@@ -1370,68 +1410,90 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
     await update.message.reply_document(
         document=open(dump_path, 'rb'),
         filename=f"dump_{analyzer.file_name}.txt",
-        caption="📄 **Complete dump.txt**"
+        caption="📄 Full dump.txt generated"
     )
     
     log_action(user_id, "DUMP", analyzer.file_name)
     update_user_activity(user_id)
-    
     os.remove(file_path)
     os.remove(dump_path)
 
-async def process_json(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str):
+async def process_patch(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str):
     user_id = update.effective_user.id
-    await update.message.reply_text("🔍 Extracting JSON from .so...")
+    patch_data = context.user_data.get('patch_data', {})
     
-    success, json_data, msg = extract_json_from_so(file_path)
+    if not patch_data:
+        await update.message.reply_text("❌ Use /patch <old> <new> first")
+        os.remove(file_path)
+        return
+    
+    await update.message.reply_text("🔧 Patching .so file...")
+    
+    patcher = SOPatcher(file_path)
+    patcher.load()
+    
+    if patch_data.get('type') == 'url':
+        success = patcher.patch_url(patch_data['old'], patch_data['new'])
+    else:
+        success = patcher.patch_string(patch_data['old'], patch_data['new'])
     
     if success:
-        json_str = json.dumps(json_data, indent=2)
-        json_path = os.path.join(DUMP_DIR, f"json_{user_id}_{os.path.basename(file_path)}.json")
-        with open(json_path, 'w', encoding='utf-8') as f:
-            f.write(json_str)
-        
-        await update.message.reply_document(
-            document=open(json_path, 'rb'),
-            filename=f"extracted_{os.path.basename(file_path)}.json",
-            caption=f"✅ {msg}\n\n```json\n{json_str[:500]}\n```",
-            parse_mode='Markdown'
-        )
-        os.remove(json_path)
+        save_success, output_path, patched_hash = patcher.save()
+        if save_success:
+            await update.message.reply_document(
+                document=open(output_path, 'rb'),
+                filename=f"patched_{os.path.basename(file_path)}",
+                caption=f"✅ Patch applied!\n\n"
+                        f"Original Hash: {patcher.original_hash[:16]}\n"
+                        f"Patched Hash: {patched_hash[:16]}\n"
+                        f"Changes:\n" + '\n'.join(f"• {c}" for c in patcher.changes)
+            )
+            
+            c.execute(
+                """INSERT INTO patches_history 
+                (user_id, original_file, patched_file, original_hash, patched_hash, changes, timestamp) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, os.path.basename(file_path), os.path.basename(output_path),
+                 patcher.original_hash, patched_hash, json.dumps(patcher.changes), now_ist().isoformat())
+            )
+            conn.commit()
+            
+            update_user_patch_count(user_id)
+            log_action(user_id, "PATCH", str(patcher.changes))
+            update_user_activity(user_id)
+            os.remove(output_path)
+        else:
+            await update.message.reply_text(f"❌ Failed to save: {patched_hash}")
     else:
-        await update.message.reply_text(f"❌ {msg}")
+        await update.message.reply_text("❌ No changes made")
     
-    log_action(user_id, "JSON_EXTRACT", os.path.basename(file_path))
-    update_user_activity(user_id)
     os.remove(file_path)
+    context.user_data['patch_data'] = {}
 
-async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, so_path: str, json_path: str):
+async def process_rootpatch(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str):
     user_id = update.effective_user.id
-    await update.message.reply_text("🔄 Injecting JSON into .so...")
+    await update.message.reply_text("🔓 Bypassing root detection in APK...")
     
-    success, output_path, msg = json_to_so_repack(json_path, so_path)
+    success, output_path, msg = bypass_root_detection(file_path)
     
     if success:
         await update.message.reply_document(
             document=open(output_path, 'rb'),
-            filename=f"repacked_{os.path.basename(so_path)}",
-            caption=f"✅ {msg}\n\n"
-                    f"Original: `{os.path.basename(so_path)}`\n"
-                    f"JSON: `{os.path.basename(json_path)}`"
+            filename=f"patched_{os.path.basename(file_path)}",
+            caption=f"✅ Root detection bypassed!\n\n{msg}"
         )
+        update_user_apk_patch_count(user_id)
+        log_action(user_id, "ROOTPATCH", os.path.basename(file_path))
+        update_user_activity(user_id)
         os.remove(output_path)
     else:
         await update.message.reply_text(f"❌ {msg}")
     
-    log_action(user_id, "REPACK", os.path.basename(so_path))
-    update_user_activity(user_id)
-    
-    os.remove(so_path)
-    os.remove(json_path)
+    os.remove(file_path)
 
-# =============================================
+# ============================================================
 # ADMIN COMMANDS
-# =============================================
+# ============================================================
 
 async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1439,19 +1501,36 @@ async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     args = context.args
-    if not args or args[0] not in ['member', 'pro', 'vip', 'lifetime']:
-        await update.message.reply_text("Usage: /genkey <member|pro|vip|lifetime>")
+    if len(args) < 3:
+        await update.message.reply_text(
+            "Usage: /genkey <type> <days> <devices>\n"
+            "Example: /genkey vip 90 2\n\n"
+            "Types: member, pro, vip, lifetime, custom"
+        )
         return
     
     key_type = args[0]
+    try:
+        expiry_days = int(args[1])
+        max_devices = int(args[2])
+    except:
+        await update.message.reply_text("❌ Days and devices must be numbers")
+        return
+    
     key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
     
-    c.execute("INSERT INTO keys (key, type, created_by, created_at) VALUES (?, ?, ?, ?)",
-              (key, key_type, ADMIN_ID, now_ist().isoformat()))
+    c.execute(
+        """INSERT INTO keys 
+        (key, type, expiry_days, max_devices, created_by, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (key, key_type, expiry_days, max_devices, ADMIN_ID, now_ist().isoformat())
+    )
     conn.commit()
     
     fb_put(f"keys/{key}", {
         'type': key_type,
+        'expiry_days': expiry_days,
+        'max_devices': max_devices,
         'created_by': ADMIN_ID,
         'created_at': now_ist().isoformat(),
         'used_by': None,
@@ -1459,9 +1538,14 @@ async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
     
     await update.message.reply_text(
-        f"✅ Key generated:\n`{key}`\n"
-        f"Type: {key_type}\n"
-        f"Give: `/redeem {key}`"
+        f"✅ Key Generated Successfully!\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 Key: {key}\n"
+        f"📦 Type: {key_type}\n"
+        f"📊 Days: {expiry_days}\n"
+        f"📱 Devices: {max_devices}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Give to user: /redeem {key}"
     )
     log_action(ADMIN_ID, "GENKEY", f"{key_type}:{key}")
 
@@ -1469,17 +1553,23 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     
-    c.execute("SELECT user_id, username, key_type, expiry_date, is_banned, used_count FROM users ORDER BY user_id DESC LIMIT 25")
+    c.execute("""SELECT user_id, username, key_type, expiry_date, is_banned, used_count, max_devices 
+                 FROM users ORDER BY user_id DESC LIMIT 25""")
     users = c.fetchall()
     if not users:
-        await update.message.reply_text("No users")
+        await update.message.reply_text("📭 No users found")
         return
     
-    text = f"👥 **Users ({BOT_NAME})**\n\n"
+    text = "👥 USERS LIST\n═══════════════════════════════════\n"
     for u in users:
-        status = "⛔" if u[4] else "✅"
+        status = "🚫 Banned" if u[4] else "✅ Active"
         expiry = u[3][:10] if u[3] else "None"
-        text += f"{status} `{u[0]}` | @{u[1]} | {u[2]} | {expiry} | {u[5]} uses\n"
+        text += f"ID: {u[0]}\n"
+        text += f"User: @{u[1]}\n"
+        text += f"Key: {u[2]} | Exp: {expiry}\n"
+        text += f"Status: {status} | Used: {u[5]} | Devices: {u[6]}\n"
+        text += "────────────────────────────────────\n"
+    
     await update.message.reply_text(text)
 
 async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1489,13 +1579,14 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT user_id, action, detail, timestamp FROM logs ORDER BY id DESC LIMIT 20")
     logs = c.fetchall()
     if not logs:
-        await update.message.reply_text("No logs")
+        await update.message.reply_text("📭 No logs found")
         return
     
-    text = f"📜 **Recent Logs**\n\n"
+    text = "📜 RECENT LOGS\n═══════════════════════════════════\n"
     for log in logs:
-        detail = log[2][:25] if log[2] else ""
-        text += f"`{log[0]}` | {log[1]} | {detail} | {log[3][11:19]}\n"
+        detail = log[2][:30] if log[2] else ""
+        text += f"{log[0]} | {log[1]} | {detail} | {log[3][11:19]}\n"
+    
     await update.message.reply_text(text)
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1507,12 +1598,15 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /ban <user_id>")
         return
     
-    user_id = int(args[0])
-    c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
-    conn.commit()
-    fb_patch(f"users/{user_id}", {'is_banned': 1})
-    await update.message.reply_text(f"✅ User {user_id} banned")
-    log_action(ADMIN_ID, "BAN", str(user_id))
+    try:
+        user_id = int(args[0])
+        c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
+        conn.commit()
+        fb_patch(f"users/{user_id}", {'is_banned': 1})
+        await update.message.reply_text(f"✅ User {user_id} banned")
+        log_action(ADMIN_ID, "BAN", str(user_id))
+    except:
+        await update.message.reply_text("❌ Invalid user ID")
 
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1523,12 +1617,15 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /unban <user_id>")
         return
     
-    user_id = int(args[0])
-    c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
-    conn.commit()
-    fb_patch(f"users/{user_id}", {'is_banned': 0})
-    await update.message.reply_text(f"✅ User {user_id} unbanned")
-    log_action(ADMIN_ID, "UNBAN", str(user_id))
+    try:
+        user_id = int(args[0])
+        c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+        conn.commit()
+        fb_patch(f"users/{user_id}", {'is_banned': 0})
+        await update.message.reply_text(f"✅ User {user_id} unbanned")
+        log_action(ADMIN_ID, "UNBAN", str(user_id))
+    except:
+        await update.message.reply_text("❌ Invalid user ID")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1548,17 +1645,22 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     analysis_count = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM patches_history")
     patch_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM apk_patches_history")
+    apk_count = c.fetchone()[0]
     
     await update.message.reply_text(
-        f"📊 **{BOT_NAME} Stats**\n\n"
+        f"📊 VTX DEX STATISTICS\n"
+        f"═══════════════════════════════════\n"
         f"👥 Total Users: {total}\n"
         f"✅ Active: {active}\n"
-        f"⛔ Banned: {banned}\n"
+        f"🚫 Banned: {banned}\n"
         f"🔑 Unused Keys: {unused}\n"
         f"📝 Logs: {log_count}\n"
-        f"🔍 Analysis: {analysis_count}\n"
+        f"🔍 Analyses: {analysis_count}\n"
         f"🔧 Patches: {patch_count}\n"
-        f"🔥 Developer: {DEV_NAME}"
+        f"📱 APK Patches: {apk_count}\n"
+        f"═══════════════════════════════════\n"
+        f"👤 Developer: {DEV_NAME}"
     )
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1577,7 +1679,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = 0
     for u in users:
         try:
-            await context.bot.send_message(u[0], f"📢 **Broadcast**\n\n{msg}")
+            await context.bot.send_message(
+                u[0],
+                f"📢 BROADCAST\n"
+                f"═══════════════════════════════════\n\n"
+                f"{msg}\n\n"
+                f"────────────────────────────────────\n"
+                f"📌 VTX DEX Bot"
+            )
             sent += 1
             time.sleep(0.5)
         except:
@@ -1586,42 +1695,47 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
     log_action(ADMIN_ID, "BROADCAST", msg)
 
-# =============================================
+# ============================================================
 # CALLBACK HANDLER
-# =============================================
+# ============================================================
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     if query.data == "redeem":
-        await query.message.reply_text("🔑 /redeem <KEY>")
+        await query.message.reply_text(
+            "🔑 Redeem Key\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Usage: /redeem <KEY>\n"
+            "Example: /redeem ABC123XYZ\n\n"
+            "Contact {DEV_NAME} to purchase a key."
+        )
     elif query.data == "help":
         await help_cmd(update, context)
     elif query.data == "buy":
         await buy(update, context)
 
-# =============================================
+# ============================================================
 # REGISTER ALL HANDLERS
-# =============================================
+# ============================================================
 
-# Commands
+# User Commands
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("redeem", redeem))
 app.add_handler(CommandHandler("mykey", mykey))
 app.add_handler(CommandHandler("analyze", analyze))
-app.add_handler(CommandHandler("patch", patch))
 app.add_handler(CommandHandler("dump", dump))
-app.add_handler(CommandHandler("json", json_cmd))
-app.add_handler(CommandHandler("repack", repack))
+app.add_handler(CommandHandler("patch", patch))
+app.add_handler(CommandHandler("rootpatch", rootpatch))
 app.add_handler(CommandHandler("rootbypass", rootbypass))
 app.add_handler(CommandHandler("antidebug", antidebug))
 app.add_handler(CommandHandler("pinning", pinning))
 app.add_handler(CommandHandler("frida", frida_cmd))
-app.add_handler(CommandHandler("help", help_cmd))
 app.add_handler(CommandHandler("buy", buy))
+app.add_handler(CommandHandler("help", help_cmd))
 
-# Admin
+# Admin Commands
 app.add_handler(CommandHandler("genkey", genkey))
 app.add_handler(CommandHandler("users", users))
 app.add_handler(CommandHandler("logs", logs))
@@ -1630,27 +1744,26 @@ app.add_handler(CommandHandler("unban", unban))
 app.add_handler(CommandHandler("stats", stats))
 app.add_handler(CommandHandler("broadcast", broadcast))
 
-# File handlers
-app.add_handler(MessageHandler(filters.Document.ALL & ~filters.Document.FileExtension("json"), handle_document))
-app.add_handler(MessageHandler(filters.Document.FileExtension("json"), handle_document))
+# File Handler
+app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
 # Callback
 app.add_handler(CallbackQueryHandler(callback))
 
-# =============================================
+# ============================================================
 # MAIN
-# =============================================
+# ============================================================
 
 if __name__ == "__main__":
     print("=" * 60)
-    print(f"🗡️ {BOT_NAME} — ULTIMATE REVERSE ENGINEERING BOT")
+    print("🗡️ VTX DEX — ULTIMATE REVERSE ENGINEERING BOT")
     print("=" * 60)
     print(f"🔥 Developer: {DEV_NAME}")
-    print(f"📡 Firebase: {FIREBASE_URL}")
     print(f"📊 Database: {DB_FILE}")
     print(f"👤 Admin ID: {ADMIN_ID}")
     print(f"📁 Dump Dir: {DUMP_DIR}")
     print(f"📁 Patch Dir: {PATCH_DIR}")
+    print(f"📁 APK Dir: {APK_DIR}")
     print("=" * 60)
     print("✅ Bot is ONLINE and READY!")
     print("=" * 60)
