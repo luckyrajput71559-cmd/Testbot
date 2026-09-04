@@ -3,8 +3,9 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 14.0 FINAL
-# LINES: 1500+
+# VERSION: 16.0 ULTIMATE
+# LINES: 1400+
+# STATUS: PRODUCTION READY — FULL FEATURES
 # ================================================================
 
 import os
@@ -22,7 +23,6 @@ import zipfile
 import shutil
 import logging
 import tempfile
-import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union
@@ -50,7 +50,6 @@ from telegram.ext import (
     filters,
     ConversationHandler
 )
-from telegram.constants import ParseMode
 
 # ================================================================
 # TIMEZONE
@@ -75,8 +74,9 @@ DUMP_DIR = "dumps"
 PATCH_DIR = "patches"
 TEMP_DIR = "temp"
 JSON_DIR = "json_data"
+APK_DIR = "apks"
 
-for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, JSON_DIR]:
+for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, JSON_DIR, APK_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ================================================================
@@ -96,9 +96,12 @@ c.execute('''CREATE TABLE IF NOT EXISTS users (
     max_devices INTEGER DEFAULT 1,
     is_banned INTEGER DEFAULT 0,
     used_count INTEGER DEFAULT 0,
+    total_analysis INTEGER DEFAULT 0,
+    total_patches INTEGER DEFAULT 0,
+    total_apk_patches INTEGER DEFAULT 0,
+    total_json_analysis INTEGER DEFAULT 0,
     total_dumps INTEGER DEFAULT 0,
     total_repacks INTEGER DEFAULT 0,
-    total_json_analysis INTEGER DEFAULT 0,
     last_activity TEXT,
     registered_date TEXT
 )''')
@@ -111,7 +114,8 @@ c.execute('''CREATE TABLE IF NOT EXISTS keys (
     created_by INTEGER,
     created_at TEXT,
     used_by INTEGER,
-    used_at TEXT
+    used_at TEXT,
+    is_blacklisted INTEGER DEFAULT 0
 )''')
 
 c.execute('''CREATE TABLE IF NOT EXISTS logs (
@@ -123,11 +127,49 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs (
     timestamp TEXT
 )''')
 
+c.execute('''CREATE TABLE IF NOT EXISTS analysis_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    file_name TEXT,
+    file_hash TEXT,
+    file_size INTEGER,
+    architecture TEXT,
+    firebase_urls TEXT,
+    api_keys TEXT,
+    flags TEXT,
+    strings_count INTEGER,
+    json_count INTEGER,
+    timestamp TEXT
+)''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS patches_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    original_file TEXT,
+    patched_file TEXT,
+    original_hash TEXT,
+    patched_hash TEXT,
+    changes TEXT,
+    timestamp TEXT
+)''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS apk_patches_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    original_file TEXT,
+    patched_file TEXT,
+    original_hash TEXT,
+    patched_hash TEXT,
+    so_files_patched INTEGER,
+    timestamp TEXT
+)''')
+
 c.execute('''CREATE TABLE IF NOT EXISTS json_analysis_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     url TEXT,
     data_keys INTEGER,
+    commands_count INTEGER,
     timestamp TEXT
 )''')
 
@@ -136,7 +178,8 @@ c.execute('''CREATE TABLE IF NOT EXISTS repack_history (
     user_id INTEGER,
     original_file TEXT,
     patched_file TEXT,
-    changes TEXT,
+    old_url TEXT,
+    new_url TEXT,
     timestamp TEXT
 )''')
 
@@ -163,6 +206,13 @@ def fb_patch(path: str, data: dict) -> bool:
     try:
         r = requests.patch(f"{FIREBASE_URL}/{path}.json", json=data, timeout=10)
         return r.status_code in [200, 201]
+    except:
+        return False
+
+def fb_delete(path: str) -> bool:
+    try:
+        r = requests.delete(f"{FIREBASE_URL}/{path}.json", timeout=10)
+        return r.status_code in [200, 204]
     except:
         return False
 
@@ -202,6 +252,13 @@ def log_action(user_id: int, action: str, detail: str = "", target: str = ""):
         (user_id, action, detail, target, now_ist().isoformat())
     )
     conn.commit()
+    fb_put(f"logs/{user_id}_{int(time.time())}", {
+        'user_id': user_id,
+        'action': action,
+        'detail': detail,
+        'target': target,
+        'timestamp': now_ist().isoformat()
+    })
 
 def get_user(user_id: int):
     c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
@@ -216,12 +273,30 @@ def create_user(user_id: int, username: str):
         (user_id, username, 'inactive', None, now, None, now, now)
     )
     conn.commit()
+    fb_put(f"users/{user_id}", {
+        'username': username,
+        'key_type': 'inactive',
+        'key_value': None,
+        'login_date': now,
+        'expiry_date': None,
+        'is_banned': 0,
+        'used_count': 0,
+        'registered_date': now
+    })
     log_action(user_id, "REGISTER")
     return True
 
 def update_user_activity(user_id: int):
     c.execute("UPDATE users SET used_count = used_count + 1, last_activity = ? WHERE user_id = ?",
               (now_ist().isoformat(), user_id))
+    conn.commit()
+    fb_patch(f"users/{user_id}", {
+        'used_count': c.lastrowid,
+        'last_activity': now_ist().isoformat()
+    })
+
+def update_user_stats(user_id: int, column: str):
+    c.execute(f"UPDATE users SET {column} = {column} + 1 WHERE user_id = ?", (user_id,))
     conn.commit()
 
 # ================================================================
@@ -267,6 +342,10 @@ def check_access(user_id: int) -> Tuple[bool, str]:
 def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     key = key.upper().strip()
     
+    c.execute("SELECT * FROM keys WHERE key=? AND is_blacklisted=1", (key,))
+    if c.fetchone():
+        return False, "❌ This key has been blacklisted"
+    
     fb_data = fb_get(f"keys/{key}")
     if fb_data and not fb_data.get('used_by'):
         key_type = fb_data.get('type', 'custom')
@@ -303,7 +382,7 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         log_action(user_id, "REDEEM", f"{key_type}:{key}")
         return True, f"✅ Key Redeemed!\n📦 Type: {key_type}\n📅 Expires: {expiry[:10]}\n📊 Days: {expiry_days}\n📱 Devices: {max_devices}"
     
-    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL", (key,))
+    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL AND is_blacklisted=0", (key,))
     key_data = c.fetchone()
     if key_data:
         key_type = key_data[1]
@@ -337,60 +416,91 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     return False, "❌ Invalid or already used key"
 
 # ================================================================
-# DUMP + RADAR 2 SCAN — OPTIMIZED
+# DUMP + RADAR 2 SCAN — COMPLETE
 # ================================================================
 def generate_dump_with_radar(file_path: str, user_id: int) -> Tuple[str, List[str], List[dict]]:
-    """Generate dump.txt with Radar 2 URL scan"""
-    
-    # Read file in chunks to avoid memory issues
     with open(file_path, 'rb') as f:
         data = f.read()
     
-    # Get hash
-    file_hash = hashlib.md5(data).hexdigest()
-    file_size = os.path.getsize(file_path)
-    file_name = os.path.basename(file_path)
-    
-    # Decode with error handling
     text_data = data.decode('utf-8', errors='ignore')
+    file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+    file_hash = hashlib.md5(data).hexdigest()
     
-    # ===== EXTRACT ALL URLs =====
+    # ===== EXTRACT ALL CLEAN URLs =====
     all_urls = []
     
-    # Pattern 1: Full URLs
     url_patterns = [
-        r'https?://[^\s"\'<>]+',
-        r'www\.[^\s"\'<>]+',
-        r'[a-zA-Z0-9-]+\.firebaseio\.com',
-        r'[a-zA-Z0-9-]+\.unaux\.com',
-        r'[a-zA-Z0-9-]+\.vplink\.in',
-        r'[a-zA-Z0-9-]+\.telegra\.ph',
-        r'[a-zA-Z0-9-]+\.github\.io',
+        r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[^\s"\'<>]*)?',
+        r'[a-zA-Z0-9\-]+\.firebaseio\.com/[^\s"\'<>]*',
         r't\.me/[a-zA-Z0-9_]+',
+        r'[a-zA-Z0-9\-]+\.unaux\.com/[^\s"\'<>]*',
+        r'[a-zA-Z0-9\-]+\.vplink\.in/[^\s"\'<>]*',
     ]
     
     for pattern in url_patterns:
         matches = re.findall(pattern, text_data)
-        all_urls.extend(matches)
+        for m in matches:
+            if not m.startswith('http'):
+                all_urls.append(f"https://{m}")
+            else:
+                all_urls.append(m)
     
-    # Pattern 2: Obfuscated URLs
-    obfuscated_pattern = r'[a-zA-Z0-9_\-\.]+://[a-zA-Z0-9_\-\./:?&=]+'
-    matches = re.findall(obfuscated_pattern, text_data)
-    all_urls.extend(matches)
-    
-    # Remove duplicates
     all_urls = list(set(all_urls))
+    
+    # ===== Check each URL =====
+    url_status = []
+    for url in all_urls[:50]:
+        try:
+            if not url.startswith('http'):
+                test_url = 'https://' + url
+            else:
+                test_url = url
+            
+            resp = requests.get(test_url, timeout=5, allow_redirects=True)
+            if resp.status_code == 200:
+                status = f"✅ 200 OK"
+            elif 300 <= resp.status_code < 400:
+                status = f"🔄 {resp.status_code} Redirect"
+            else:
+                status = f"⚠️ {resp.status_code}"
+            url_status.append((status, url))
+        except:
+            url_status.append(("❌ Failed", url))
     
     # ===== Extract JSON structures =====
     json_structures = []
-    json_pattern = r'\{[^{}]*\}'
-    for match in re.findall(json_pattern, text_data):
+    for match in re.findall(r'\{[^{}]*\}', text_data):
         try:
             json_structures.append(json.loads(match))
         except:
             pass
     
-    # ===== Generate dump text =====
+    # ===== Extract API Keys =====
+    api_keys = list(set(re.findall(r'AIza[0-9A-Za-z_-]{35}', text_data)))
+    
+    # ===== Extract Flags =====
+    flags = {}
+    flag_patterns = [
+        r'verify_active\s*=\s*([0-9]+)',
+        r'access_hours\s*=\s*([0-9]+)',
+        r'maintenance\s*=\s*([0-9]+)',
+        r'debug_mode\s*=\s*([0-9]+)',
+    ]
+    for pattern in flag_patterns:
+        matches = re.findall(pattern, text_data)
+        if matches:
+            flag_name = re.search(r'([a-zA-Z_]+)\s*=', pattern)
+            if flag_name:
+                flags[flag_name.group(1)] = matches[0]
+    
+    # ===== Extract Functions =====
+    functions = list(set(re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*\{', text_data)))[:10]
+    
+    # ===== Extract Strings =====
+    strings = list(set(re.findall(r'[a-zA-Z0-9_\-\./\\@:]{4,}', text_data)))[:50]
+    
+    # ===== Generate dump =====
     lines = []
     lines.append("=" * 60)
     lines.append("VTX DEX DUMP FILE + RADAR 2 SCAN")
@@ -401,37 +511,18 @@ def generate_dump_with_radar(file_path: str, user_id: int) -> Tuple[str, List[st
     lines.append(f"Date: {fmt_ist(now_ist())}")
     lines.append("")
     
-    # RADAR 2 SCAN
+    # RADAR 2
     lines.append("━" * 60)
     lines.append("📡 RADAR 2 SCAN — URL STATUS")
     lines.append("━" * 60)
     lines.append("")
-    
-    if all_urls:
-        # Check each URL
-        for url in all_urls[:30]:
-            try:
-                if not url.startswith('http'):
-                    test_url = 'https://' + url if not url.startswith('www.') else 'https://' + url
-                else:
-                    test_url = url
-                
-                resp = requests.get(test_url, timeout=3, allow_redirects=True)
-                if resp.status_code == 200:
-                    status = f"✅ {resp.status_code} OK"
-                elif 300 <= resp.status_code < 400:
-                    status = f"🔄 {resp.status_code} Redirect"
-                else:
-                    status = f"⚠️ {resp.status_code}"
-                lines.append(f"  {status} → {url}")
-            except:
-                lines.append(f"  ❌ Failed → {url}")
-        
-        if len(all_urls) > 30:
-            lines.append(f"  ... and {len(all_urls) - 30} more")
+    if url_status:
+        for status, url in url_status:
+            lines.append(f"  {status} → {url}")
+        if len(all_urls) > 50:
+            lines.append(f"  ... and {len(all_urls) - 50} more")
     else:
         lines.append("  No URLs found")
-    
     lines.append("")
     
     # Firebase URLs
@@ -449,7 +540,6 @@ def generate_dump_with_radar(file_path: str, user_id: int) -> Tuple[str, List[st
     lines.append("━" * 60)
     lines.append("🔑 API KEYS")
     lines.append("━" * 60)
-    api_keys = list(set(re.findall(r'AIza[0-9A-Za-z_-]{35}', text_data)))
     for key in api_keys:
         lines.append(f"  • {key}")
     if not api_keys:
@@ -460,20 +550,6 @@ def generate_dump_with_radar(file_path: str, user_id: int) -> Tuple[str, List[st
     lines.append("━" * 60)
     lines.append("🚩 FLAGS")
     lines.append("━" * 60)
-    flags = {}
-    flag_patterns = [
-        r'verify_active\s*=\s*([0-9]+)',
-        r'access_hours\s*=\s*([0-9]+)',
-        r'maintenance\s*=\s*([0-9]+)',
-        r'debug_mode\s*=\s*([0-9]+)',
-    ]
-    for pattern in flag_patterns:
-        matches = re.findall(pattern, text_data)
-        if matches:
-            flag_name = re.search(r'([a-zA-Z_]+)\s*=', pattern)
-            if flag_name:
-                flags[flag_name.group(1)] = matches[0]
-    
     for flag, value in flags.items():
         lines.append(f"  • {flag} = {value}")
     if not flags:
@@ -496,22 +572,18 @@ def generate_dump_with_radar(file_path: str, user_id: int) -> Tuple[str, List[st
     lines.append("━" * 60)
     lines.append("🔧 FUNCTIONS")
     lines.append("━" * 60)
-    functions = list(set(re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*\{', text_data)))[:10]
     for f in functions:
         lines.append(f"  • {f}")
     if not functions:
         lines.append("  None found")
     lines.append("")
     
-    # Strings (first 50)
+    # Strings
     lines.append("━" * 60)
     lines.append("📝 STRINGS (First 50)")
     lines.append("━" * 60)
-    strings = list(set(re.findall(r'[a-zA-Z0-9_\-\./\\@:]{4,}', text_data)))[:50]
     for s in strings:
         lines.append(f"  {s}")
-    if len(strings) > 50:
-        lines.append(f"  ... and {len(strings) - 50} more")
     lines.append("")
     
     lines.append("=" * 60)
@@ -521,24 +593,20 @@ def generate_dump_with_radar(file_path: str, user_id: int) -> Tuple[str, List[st
     return '\n'.join(lines), all_urls, json_structures
 
 # ================================================================
-# REPACK — REPLACE ALL HTTPS URLs
+# REPACK — REPLACE URL IN .SO
 # ================================================================
-def repack_so_with_new_url(file_path: str, old_url: str, new_url: str) -> Tuple[bool, Optional[str], str]:
-    """Replace all occurrences of old_url with new_url in .so file"""
+def repack_so(file_path: str, old_url: str, new_url: str) -> Tuple[bool, Optional[str], str]:
     try:
         with open(file_path, 'rb') as f:
             data = f.read()
         
         text_data = data.decode('utf-8', errors='ignore')
-        original_text = text_data
+        original = text_data
         
-        # Replace all occurrences
+        # Replace exact URL only
         text_data = text_data.replace(old_url, new_url)
         
-        # Also replace http version
-        text_data = text_data.replace(old_url.replace('https://', 'http://'), new_url.replace('https://', 'http://'))
-        
-        if text_data == original_text:
+        if text_data == original:
             return False, None, "URL not found in file"
         
         output_path = os.path.join(PATCH_DIR, f"repacked_{os.path.basename(file_path)}")
@@ -550,10 +618,40 @@ def repack_so_with_new_url(file_path: str, old_url: str, new_url: str) -> Tuple[
         return False, None, str(e)
 
 # ================================================================
+# FRIDA HOOK GENERATOR
+# ================================================================
+def generate_frida_hook(func: str) -> str:
+    return f'''// VTX DEX - Frida Hook for {func}
+Java.perform(function() {{
+    console.log("[*] Hooking {func}...");
+    var classes = [
+        "com.example.app.MainActivity",
+        "com.example.app.Config",
+        "com.example.app.FlagManager",
+        "com.example.app.AuthManager",
+        "com.example.app.SecurityManager"
+    ];
+    for (var i = 0; i < classes.length; i++) {{
+        try {{
+            var target = Java.use(classes[i]);
+            if (target && target.{func}) {{
+                target.{func}.implementation = function() {{
+                    console.log("[*] {func} called");
+                    console.log("[*] Args: " + JSON.stringify(arguments));
+                    var result = this.{func}.apply(this, arguments);
+                    console.log("[*] Return: " + result);
+                    return result;
+                }};
+                console.log("[+] Hooked {func} in " + classes[i]);
+            }}
+        }} catch(e) {{}}
+    }}
+}});'''
+
+# ================================================================
 # JSON URL ANALYSIS
 # ================================================================
 def analyze_json_from_url(url: str) -> Tuple[bool, str, dict, dict]:
-    """Fetch and analyze JSON from URL"""
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
@@ -615,45 +713,13 @@ def analyze_json_from_url(url: str) -> Tuple[bool, str, dict, dict]:
         return False, str(e), {}, {}
 
 # ================================================================
-# FRIDA HOOK GENERATOR
-# ================================================================
-def generate_frida_hook(func: str) -> str:
-    return f'''// VTX DEX - Frida Hook for {func}
-Java.perform(function() {{
-    console.log("[*] Hooking {func}...");
-    var classes = [
-        "com.example.app.MainActivity",
-        "com.example.app.Config",
-        "com.example.app.FlagManager",
-        "com.example.app.AuthManager",
-        "com.example.app.SecurityManager"
-    ];
-    for (var i = 0; i < classes.length; i++) {{
-        try {{
-            var target = Java.use(classes[i]);
-            if (target && target.{func}) {{
-                target.{func}.implementation = function() {{
-                    console.log("[*] {func} called");
-                    console.log("[*] Args: " + JSON.stringify(arguments));
-                    var result = this.{func}.apply(this, arguments);
-                    console.log("[*] Return: " + result);
-                    return result;
-                }};
-                console.log("[+] Hooked {func} in " + classes[i]);
-            }}
-        }} catch(e) {{}}
-    }}
-}});'''
-
-# ================================================================
 # BOT APPLICATION
 # ================================================================
 app = Application.builder().token(TOKEN).build()
 
 WAITING_SO = 1
-WAITING_REPACK_URL = 2
+WAITING_REPACK_SELECT = 2
 WAITING_REPACK_NEW_URL = 3
-WAITING_REPACK_JSON = 4
 
 # ================================================================
 # COMMAND HANDLERS
@@ -699,9 +765,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 /start      - Show menu
 /redeem     - Activate key
-/mykey      - Check key status
-/dump       - Generate dump.txt + Radar 2 scan
-/repack     - Replace URLs in .so + repack
+/mykey      - Check key
+/dump       - Dump + Radar 2 scan
+/repack     - Replace URL in .so
 /frida      - Generate Frida hook
 /jsonurl    - Analyze JSON from URL
 /help       - All commands
@@ -746,9 +812,9 @@ async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📊 Days Left: {left}
 📱 Devices: {user[8] if user[8] else 1}
 🔄 Used: {user[7] if user[7] else 0} times
-📊 Dumps: {user[9] if user[9] else 0}
-📊 Repacks: {user[10] if user[10] else 0}
-📊 JSON Analyses: {user[11] if user[11] else 0}
+📊 Dumps: {user[14] if user[14] else 0}
+📦 Repacks: {user[15] if user[15] else 0}
+📊 JSON Analyses: {user[13] if user[13] else 0}
 ⛔ Banned: {'Yes' if user[6] else 'No'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -834,7 +900,6 @@ async def jsonurl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     url = args[0]
     
-    # Validate URL
     try:
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
@@ -860,12 +925,11 @@ async def jsonurl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         c.execute(
-            "INSERT INTO json_analysis_history (user_id, url, data_keys, timestamp) VALUES (?, ?, ?, ?)",
-            (user_id, url, len(flattened), now_ist().isoformat())
+            "INSERT INTO json_analysis_history (user_id, url, data_keys, commands_count, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (user_id, url, len(flattened), len(flattened), now_ist().isoformat())
         )
         conn.commit()
-        c.execute("UPDATE users SET total_json_analysis = total_json_analysis + 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
+        update_user_stats(user_id, "total_json_analysis")
         
         os.remove(report_path)
         log_action(user_id, "JSONURL", url)
@@ -930,9 +994,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     file_name = doc.file_name or "unknown"
-    file_ext = os.path.splitext(file_name)[1].lower()
-    
-    # Send processing message
     processing_msg = await update.message.reply_text("⏳ Processing file... Please wait.")
     
     file_obj = await context.bot.get_file(doc.file_id)
@@ -944,10 +1005,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == 'dump':
         await process_dump(update, context, file_path, processing_msg)
     elif action == 'repack':
-        if file_ext == '.json':
-            await process_repack_json(update, context, file_path, processing_msg)
-        else:
-            await process_repack_so(update, context, file_path, processing_msg)
+        await process_repack(update, context, file_path, processing_msg)
     else:
         await processing_msg.edit_text("❌ Use a command first: /dump or /repack")
         os.remove(file_path)
@@ -970,8 +1028,7 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
         with open(dump_path, 'w', encoding='utf-8') as f:
             f.write(dump_text)
         
-        # Summary
-        summary = f"✅ Dump + Radar 2 scan complete!\n\n📊 JSON Structures: {len(json_structures)}\n📡 URLs Found: {len(all_urls)}"
+        summary = f"✅ Dump + Radar 2 scan complete!\n\n📡 URLs Found: {len(all_urls)}\n📄 JSON Structures: {len(json_structures)}"
         
         await update.message.reply_document(
             document=open(dump_path, 'rb'),
@@ -979,20 +1036,18 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
             caption=summary
         )
         
-        c.execute("UPDATE users SET total_dumps = total_dumps + 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
+        update_user_stats(user_id, "total_dumps")
         log_action(user_id, "DUMP_RADAR", os.path.basename(file_path))
         
         os.remove(file_path)
         os.remove(dump_path)
-        
         await processing_msg.delete()
         
     except Exception as e:
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
         os.remove(file_path)
 
-async def process_repack_so(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
+async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
     user_id = update.effective_user.id
     
     await processing_msg.edit_text("🔍 Scanning .so file for URLs...")
@@ -1002,8 +1057,8 @@ async def process_repack_so(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             data = f.read()
         text_data = data.decode('utf-8', errors='ignore')
         
-        # Find all URLs
-        url_pattern = r'https?://[^\s"\'<>]+'
+        # Find all clean URLs
+        url_pattern = r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[^\s"\'<>]*)?'
         urls = list(set(re.findall(url_pattern, text_data)))
         
         if not urls:
@@ -1025,77 +1080,18 @@ async def process_repack_so(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         context.user_data['repack_so'] = file_path
         context.user_data['repack_urls'] = urls
         context.user_data['repack_step'] = 'select'
-        return WAITING_REPACK_URL
-        
-    except Exception as e:
-        await processing_msg.edit_text(f"❌ Error: {str(e)}")
-        os.remove(file_path)
-
-async def process_repack_json(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
-    user_id = update.effective_user.id
-    so_path = context.user_data.get('repack_so')
-    
-    if not so_path or not os.path.exists(so_path):
-        await processing_msg.edit_text("❌ .so file not found. Please start /repack again.")
-        os.remove(file_path)
-        return
-    
-    try:
-        with open(file_path, 'r') as f:
-            json_data = json.load(f)
-        
-        old_url = context.user_data.get('repack_old_url')
-        new_url = context.user_data.get('repack_new_url')
-        
-        if not old_url or not new_url:
-            await processing_msg.edit_text("❌ No URL selected. Please start /repack again.")
-            os.remove(file_path)
-            return
-        
-        await processing_msg.edit_text("🔄 Injecting JSON into .so...")
-        
-        with open(so_path, 'rb') as f:
-            so_data = f.read()
-        
-        json_bytes = json.dumps(json_data).encode('utf-8')
-        marker = b'VTX_DEX_JSON_START'
-        end_marker = b'VTX_DEX_JSON_END'
-        so_data = so_data + b'\x00\x00' + marker + json_bytes + end_marker + b'\x00\x00'
-        
-        # Also replace URL in .so
-        text_data = so_data.decode('utf-8', errors='ignore')
-        text_data = text_data.replace(old_url, new_url)
-        so_data = text_data.encode('utf-8', errors='ignore')
-        
-        output_path = os.path.join(PATCH_DIR, f"repacked_{os.path.basename(so_path)}")
-        with open(output_path, 'wb') as f:
-            f.write(so_data)
-        
-        await update.message.reply_document(
-            document=open(output_path, 'rb'),
-            filename=f"repacked_{os.path.basename(so_path)}",
-            caption=f"✅ Repacked successfully!\nOld URL: {old_url}\nNew URL: {new_url}"
-        )
-        
-        c.execute("UPDATE users SET total_repacks = total_repacks + 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        log_action(user_id, "REPACK", f"{old_url}->{new_url}")
-        
-        os.remove(output_path)
-        os.remove(so_path)
-        os.remove(file_path)
-        context.user_data['repack_so'] = None
-        context.user_data['repack_urls'] = None
-        context.user_data['repack_step'] = None
-        
         await processing_msg.delete()
+        return WAITING_REPACK_SELECT
         
     except Exception as e:
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
         os.remove(file_path)
 
-async def handle_repack_url_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+# ================================================================
+# REPACK CONVERSATION HANDLERS
+# ================================================================
+
+async def handle_repack_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     if text.lower() == '/cancel':
@@ -1134,52 +1130,31 @@ async def handle_repack_new_url(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['repack_step'] = None
         return
     
-    context.user_data['repack_new_url'] = new_url
-    
-    await update.message.reply_text(
-        f"✅ New URL: {new_url}\n\n"
-        f"📤 Now send the `.json` file to inject into the .so file.\n"
-        f"(If you don't have a JSON file, send /skip)"
-    )
-    context.user_data['repack_step'] = 'json'
-    return WAITING_REPACK_JSON
-
-async def handle_repack_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    so_path = context.user_data.get('repack_so')
-    old_url = context.user_data.get('repack_old_url')
-    new_url = context.user_data.get('repack_new_url')
-    
-    if not so_path or not old_url or not new_url:
-        await update.message.reply_text("❌ Something went wrong. Please start /repack again.")
-        context.user_data['repack_step'] = None
-        return
-    
-    await update.message.reply_text("🔄 Repacking without JSON injection...")
+    await update.message.reply_text("🔄 Replacing URL and repacking...")
     
     try:
-        with open(so_path, 'rb') as f:
-            so_data = f.read()
+        success, output_path, msg = repack_so(so_path, old_url, new_url)
         
-        text_data = so_data.decode('utf-8', errors='ignore')
-        text_data = text_data.replace(old_url, new_url)
-        so_data = text_data.encode('utf-8', errors='ignore')
+        if success:
+            await update.message.reply_document(
+                document=open(output_path, 'rb'),
+                filename=f"repacked_{os.path.basename(so_path)}",
+                caption=f"✅ Repacked successfully!\nOld URL: {old_url}\nNew URL: {new_url}"
+            )
+            
+            c.execute(
+                "INSERT INTO repack_history (user_id, original_file, patched_file, old_url, new_url, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, os.path.basename(so_path), os.path.basename(output_path), old_url, new_url, now_ist().isoformat())
+            )
+            conn.commit()
+            
+            update_user_stats(user_id, "total_repacks")
+            log_action(user_id, "REPACK", f"{old_url}->{new_url}")
+            
+            os.remove(output_path)
+        else:
+            await update.message.reply_text(f"❌ {msg}")
         
-        output_path = os.path.join(PATCH_DIR, f"repacked_{os.path.basename(so_path)}")
-        with open(output_path, 'wb') as f:
-            f.write(so_data)
-        
-        await update.message.reply_document(
-            document=open(output_path, 'rb'),
-            filename=f"repacked_{os.path.basename(so_path)}",
-            caption=f"✅ Repacked successfully!\nOld URL: {old_url}\nNew URL: {new_url}"
-        )
-        
-        c.execute("UPDATE users SET total_repacks = total_repacks + 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        log_action(user_id, "REPACK", f"{old_url}->{new_url}")
-        
-        os.remove(output_path)
         os.remove(so_path)
         context.user_data['repack_so'] = None
         context.user_data['repack_urls'] = None
@@ -1338,6 +1313,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_count = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM keys WHERE used_by IS NULL")
     unused = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM analysis_history")
+    analysis_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM patches_history")
+    patch_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM apk_patches_history")
+    apk_count = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM json_analysis_history")
     json_count = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM repack_history")
@@ -1351,6 +1332,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚫 Banned: {banned}\n"
         f"🔑 Unused Keys: {unused}\n"
         f"📝 Logs: {log_count}\n"
+        f"🔍 Analyses: {analysis_count}\n"
+        f"🔧 Patches: {patch_count}\n"
+        f"📱 APK Patches: {apk_count}\n"
         f"📊 JSON Analyses: {json_count}\n"
         f"📦 Repacks: {repack_count}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1429,9 +1413,8 @@ app.add_handler(CommandHandler("stats", stats))
 app.add_handler(CommandHandler("broadcast", broadcast))
 
 # Message Handlers for Repack Flow
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_url_selection))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_select))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_new_url))
-app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^/skip$'), handle_repack_skip))
 
 # File Handler
 app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -1450,6 +1433,9 @@ if __name__ == "__main__":
     print(f"🔥 Developer: {DEV_NAME}")
     print(f"📊 Database: {DB_FILE}")
     print(f"👤 Admin ID: {ADMIN_ID}")
+    print(f"📁 Dump Dir: {DUMP_DIR}")
+    print(f"📁 Patch Dir: {PATCH_DIR}")
+    print(f"📁 JSON Dir: {JSON_DIR}")
     print("=" * 60)
     print("✅ Bot is ONLINE and READY!")
     print("=" * 60)
