@@ -3,9 +3,9 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 20.0 FINAL
+# VERSION: 21.0 FINAL
 # LINES: 1500+
-# STATUS: PRODUCTION READY — REPACK FIXED
+# STATUS: PRODUCTION READY — REPACK SIMPLIFIED
 # ================================================================
 
 import os
@@ -448,7 +448,7 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     return '\n'.join(lines), all_urls, json_structures
 
 # ================================================================
-# REPACK — SIMPLE VERSION
+# REPACK
 # ================================================================
 def repack_so(file_path: str, old_url: str, new_url: str) -> Tuple[bool, Optional[str], str]:
     try:
@@ -563,9 +563,8 @@ def analyze_json_from_url(url: str) -> Tuple[bool, str, dict, dict]:
 # ================================================================
 app = Application.builder().token(TOKEN).build()
 
-# Conversation states
 WAITING_SO = 1
-WAITING_REPACK_URL = 2
+WAITING_REPACK_OLD = 2
 WAITING_REPACK_NEW = 3
 
 # ================================================================
@@ -699,8 +698,9 @@ async def repack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📤 Upload .so file for URL replacement + repack\n\n"
         "I will:\n"
         "• Extract all HTTPS URLs\n"
-        "• Ask you which URL to replace\n"
-        "• Replace all occurrences\n"
+        "• Show you the list\n"
+        "• Ask for OLD URL to replace\n"
+        "• Ask for NEW URL\n"
         "• Repack and return patched .so"
     )
     context.user_data['action'] = 'repack'
@@ -879,7 +879,7 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
         os.remove(file_path)
 
 # ================================================================
-# REPACK PROCESS — SIMPLIFIED
+# REPACK PROCESS — SIMPLIFIED (NO NUMBER SELECTION)
 # ================================================================
 
 async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
@@ -901,22 +901,22 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
             os.remove(file_path)
             return
         
-        url_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(urls[:20])])
-        if len(urls) > 20:
-            url_list += f"\n... and {len(urls) - 20} more"
+        url_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(urls)])
         
         await processing_msg.delete()
         
         await update.message.reply_text(
             f"📡 Found {len(urls)} URLs in the .so file\n\n"
             f"{url_list}\n\n"
-            f"🔧 Enter the URL number to replace (or /cancel):"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 Enter the OLD URL to replace:\n"
+            f"(Copy-paste the exact URL from the list above)"
         )
         
         context.user_data['repack_so'] = file_path
         context.user_data['repack_urls'] = urls
-        context.user_data['repack_step'] = 'select'
-        return WAITING_REPACK_URL
+        context.user_data['repack_step'] = 'old_url'
+        return WAITING_REPACK_OLD
         
     except Exception as e:
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
@@ -926,44 +926,54 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
 # REPACK CONVERSATION HANDLERS — SIMPLIFIED
 # ================================================================
 
-async def handle_repack_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def handle_repack_old_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    old_url = update.message.text.strip()
     
-    if text.lower() == '/cancel':
+    if old_url.lower() == '/cancel':
         await update.message.reply_text("❌ Repack cancelled")
         context.user_data['repack_so'] = None
         context.user_data['repack_urls'] = None
         context.user_data['repack_step'] = None
         return
     
-    try:
-        index = int(text) - 1
-        urls = context.user_data.get('repack_urls', [])
-        if 0 <= index < len(urls):
-            old_url = urls[index]
-            await update.message.reply_text(
-                f"🔧 Selected: {old_url}\n\n"
-                f"📝 Enter the new URL to replace it with:"
-            )
-            context.user_data['repack_old_url'] = old_url
-            context.user_data['repack_step'] = 'new_url'
-            return WAITING_REPACK_NEW
-        else:
-            await update.message.reply_text("❌ Invalid selection. Enter a number from the list.")
-            return WAITING_REPACK_URL
-    except ValueError:
-        await update.message.reply_text("❌ Please enter a valid number.")
-        return WAITING_REPACK_URL
+    urls = context.user_data.get('repack_urls', [])
+    
+    # Check if URL exists in the list
+    if old_url not in urls:
+        await update.message.reply_text(
+            f"❌ URL not found in the list.\n\n"
+            f"Please copy-paste the exact URL from the list above.\n"
+            f"Or type /cancel to cancel."
+        )
+        return WAITING_REPACK_OLD
+    
+    await update.message.reply_text(
+        f"🔧 Selected: {old_url}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📝 Enter the NEW URL:\n"
+        f"(Paste the new URL you want to replace with)"
+    )
+    
+    context.user_data['repack_old_url'] = old_url
+    context.user_data['repack_step'] = 'new_url'
+    return WAITING_REPACK_NEW
 
 async def handle_repack_new_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    new_url = update.message.text
+    new_url = update.message.text.strip()
     
     old_url = context.user_data.get('repack_old_url')
     so_path = context.user_data.get('repack_so')
     
     if not old_url or not so_path:
         await update.message.reply_text("❌ Something went wrong. Please start /repack again.")
+        context.user_data['repack_step'] = None
+        return
+    
+    if new_url.lower() == '/cancel':
+        await update.message.reply_text("❌ Repack cancelled")
+        context.user_data['repack_so'] = None
+        context.user_data['repack_urls'] = None
         context.user_data['repack_step'] = None
         return
     
@@ -1239,7 +1249,7 @@ app.add_handler(CommandHandler("unban", unban))
 app.add_handler(CommandHandler("stats", stats))
 app.add_handler(CommandHandler("broadcast", broadcast))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_select))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_old_url))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_new_url))
 app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 app.add_handler(CallbackQueryHandler(callback))
