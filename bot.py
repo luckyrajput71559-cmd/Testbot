@@ -1328,6 +1328,9 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
+# ================================================================
+# UNBAN COMMAND
+# ================================================================
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Admin only")
@@ -1335,7 +1338,7 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /unban <user_id>")
+        await update.message.reply_text("Usage: /unban <user_id>\nExample: /unban 5510702228")
         return
     
     try:
@@ -1350,8 +1353,10 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(f"✅ User {user_id} unbanned")
         log_action(ADMIN_ID, "UNBAN", str(user_id))
-    except:
-        await update.message.reply_text("❌ Invalid user ID")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID. Must be a number.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
