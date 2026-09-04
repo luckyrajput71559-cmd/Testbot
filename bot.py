@@ -3,9 +3,9 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 18.0 FINAL
+# VERSION: 19.0 FINAL
 # LINES: 1500+
-# STATUS: PRODUCTION READY — ALL FIXED
+# STATUS: PRODUCTION READY — REPACK FIXED
 # ================================================================
 
 import os
@@ -74,9 +74,8 @@ DUMP_DIR = "dumps"
 PATCH_DIR = "patches"
 TEMP_DIR = "temp"
 JSON_DIR = "json_data"
-APK_DIR = "apks"
 
-for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, JSON_DIR, APK_DIR]:
+for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, JSON_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ================================================================
@@ -342,7 +341,7 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     return False, "❌ Invalid or already used key"
 
 # ================================================================
-# DUMP + RADAR 2 — CLEAN VERSION
+# DUMP + RADAR 2
 # ================================================================
 def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]]:
     with open(file_path, 'rb') as f:
@@ -353,7 +352,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     file_size = os.path.getsize(file_path)
     file_hash = hashlib.md5(data).hexdigest()
     
-    # ===== EXTRACT CLEAN URLs ONLY =====
     all_urls = []
     
     clean_pattern = r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*)?'
@@ -385,7 +383,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     
     all_urls = list(set([u for u in all_urls if len(u) > 10 and ' ' not in u]))
     
-    # ===== Check each URL =====
     url_status = []
     for url in all_urls[:50]:
         try:
@@ -405,7 +402,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         except:
             url_status.append(("❌ Failed", url))
     
-    # ===== Extract JSON structures =====
     json_structures = []
     for match in re.findall(r'\{[^{}]*\}', text_data):
         try:
@@ -413,7 +409,6 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
         except:
             pass
     
-    # ===== Generate dump =====
     lines = []
     lines.append("=" * 60)
     lines.append("VTX DEX DUMP FILE + RADAR 2 SCAN")
@@ -859,7 +854,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # ================================================================
-# FILE HANDLERS — FIXED
+# FILE HANDLERS
 # ================================================================
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -889,8 +884,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await processing_msg.edit_text("❌ Use a command first: /dump or /repack")
         os.remove(file_path)
-    
-    # DO NOT reset action here — keep it for repack flow
 
 # ================================================================
 # PROCESS FUNCTIONS
@@ -968,11 +961,7 @@ async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, fil
         os.remove(file_path)
 
 # ================================================================
-# REPACK CONVERSATION HANDLERS
-# ================================================================
-
-# ================================================================
-# REPACK FLOW — FIXED
+# REPACK CONVERSATION HANDLERS — FIXED
 # ================================================================
 
 async def handle_repack_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1046,6 +1035,7 @@ async def handle_repack_new_url(update: Update, context: ContextTypes.DEFAULT_TY
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
+
 # ================================================================
 # ADMIN COMMANDS
 # ================================================================
@@ -1260,7 +1250,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # REGISTER ALL HANDLERS
 # ================================================================
 
-# User Commands
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("redeem", redeem))
 app.add_handler(CommandHandler("mykey", mykey))
@@ -1271,7 +1260,6 @@ app.add_handler(CommandHandler("jsonurl", jsonurl))
 app.add_handler(CommandHandler("buy", buy))
 app.add_handler(CommandHandler("help", help_cmd))
 
-# Admin Commands
 app.add_handler(CommandHandler("genkey", genkey))
 app.add_handler(CommandHandler("users", users))
 app.add_handler(CommandHandler("logs", logs))
@@ -1280,14 +1268,9 @@ app.add_handler(CommandHandler("unban", unban))
 app.add_handler(CommandHandler("stats", stats))
 app.add_handler(CommandHandler("broadcast", broadcast))
 
-# Message Handlers for Repack Flow
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_select))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_new_url))
-
-# File Handler
 app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
-# Callback
 app.add_handler(CallbackQueryHandler(callback))
 
 # ================================================================
@@ -1301,8 +1284,6 @@ if __name__ == "__main__":
     print(f"🔥 Developer: {DEV_NAME}")
     print(f"📊 Database: {DB_FILE}")
     print(f"👤 Admin ID: {ADMIN_ID}")
-    print(f"📁 Dump Dir: {DUMP_DIR}")
-    print(f"📁 Patch Dir: {PATCH_DIR}")
     print("=" * 60)
     print("✅ Bot is ONLINE and READY!")
     print("=" * 60)
