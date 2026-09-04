@@ -1,0 +1,61 @@
+name: VTX DEX Bot Deploy
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 */6 * * *'  # Har 6 ghante auto-restart
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          architecture: 'x64'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || pip install python-telegram-bot==20.8 requests==2.31.0 pytz==2024.1
+      
+      - name: Setup Database
+        run: |
+          python -c "import sqlite3; conn = sqlite3.connect('vtxdex.db'); conn.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, key_type TEXT DEFAULT \"inactive\", key_value TEXT, login_date TEXT, expiry_date TEXT, expiry_days INTEGER DEFAULT 0, max_devices INTEGER DEFAULT 1, is_banned INTEGER DEFAULT 0, used_count INTEGER DEFAULT 0, total_analysis INTEGER DEFAULT 0, total_patches INTEGER DEFAULT 0, total_apk_patches INTEGER DEFAULT 0, last_activity TEXT, registered_date TEXT)'); conn.execute('CREATE TABLE IF NOT EXISTS keys (key TEXT PRIMARY KEY, type TEXT, expiry_days INTEGER, max_devices INTEGER, created_by INTEGER, created_at TEXT, used_by INTEGER, used_at TEXT, is_blacklisted INTEGER DEFAULT 0)'); conn.execute('CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, detail TEXT, target TEXT, timestamp TEXT)'); conn.execute('CREATE TABLE IF NOT EXISTS analysis_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, file_name TEXT, file_hash TEXT, file_size INTEGER, architecture TEXT, firebase_urls TEXT, api_keys TEXT, flags TEXT, strings_count INTEGER, json_count INTEGER, timestamp TEXT)'); conn.execute('CREATE TABLE IF NOT EXISTS patches_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, original_file TEXT, patched_file TEXT, original_hash TEXT, patched_hash TEXT, changes TEXT, timestamp TEXT)'); conn.execute('CREATE TABLE IF NOT EXISTS apk_patches_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, original_file TEXT, patched_file TEXT, original_hash TEXT, patched_hash TEXT, so_files_patched INTEGER, timestamp TEXT)'); conn.commit(); conn.close()"
+      
+      - name: Run Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          FIREBASE_URL: "https://mn-rohan-default-rtdb.firebaseio.com"
+        run: |
+          python bot.py
+      
+      - name: Upload Logs (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs
+          path: |
+            *.log
+            *.db
+            dumps/
+            patches/
+            apks/
