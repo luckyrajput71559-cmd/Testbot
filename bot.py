@@ -914,42 +914,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_action(user_id, "START")
     update_user_activity(user_id)
 
-# ----- REDEEM -----
 async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     
     if not args:
-        await update.message.reply_text("❌ Usage: /redeem <KEY>\nExample: /redeem ABC123XYZ")
+        await update.message.reply_text("❌ Usage: /redeem <KEY>")
         return
     
     key = args[0].upper()
-    success, msg = redeem_key(user_id, key)
-    await update.message.reply_text(msg)
-    if success:
-        update_user_activity(user_id)
-
-# ----- MYKEY -----
-async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    if not user:
-        await update.message.reply_text("❌ Not registered. Use /start")
-        return
     
-    await update.message.reply_text(
-        f"🔑 **Your Key Info**\n\n"
-        f"Type: `{user[2]}`\n"
-        f"Key: `{user[3] or 'None'}`\n"
-        f"Login: `{user[4][:10] if user[4] else 'N/A'}`\n"
-        f"Expires: `{user[5][:10] if user[5] else 'N/A'}`\n"
-        f"Days Left: `{days_left(user[5])}`\n"
-        f"Used: `{user[7] if user[7] else 0}` times\n"
-        f"Analysis: `{user[8] if user[8] else 0}`\n"
-        f"Patches: `{user[9] if user[9] else 0}`\n"
-        f"Banned: `{'Yes' if user[6] else 'No'}`"
-    )
-    update_user_activity(user_id)
+    # Check Firebase
+    try:
+        url = f"{FIREBASE_URL}/keys/{key}.json"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            key_data = response.json()
+            if key_data and not key_data.get('used_by'):
+                key_type = key_data.get('type', 'custom')
+                expiry_days = key_data.get('expiry_days', 30)
+                max_devices = key_data.get('max_devices', 1)
+                
+                expiry = (now_ist() + timedelta(days=expiry_days)).isoformat()
+                
+                c.execute(
+                    "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=?, max_devices=? WHERE user_id=?",
+                    (key_type, key, expiry, now_ist().isoformat(), max_devices, user_id)
+                )
+                conn.commit()
+                
+                requests.patch(
+                    f"{FIREBASE_URL}/keys/{key}.json",
+                    json={'used_by': user_id, 'used_at': now_ist().isoformat()}
+                )
+                
+                await update.message.reply_text(
+                    f"✅ **Key Redeemed!**\n\n"
+                    f"Type: `{key_type}`\n"
+                    f"Expires: `{expiry[:10]}`\n"
+                    f"Days: `{expiry_days}`\n"
+                    f"Max Devices: `{max_devices}`"
+                )
+                return
+    except Exception as e:
+        print(f"Firebase error: {e}")
+    
+    await update.message.reply_text("❌ Invalid or already used key")
 
 # ----- ANALYZE -----
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
