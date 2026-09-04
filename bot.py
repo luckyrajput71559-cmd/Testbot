@@ -3,9 +3,9 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # =============================================
 # DEVELOPER: @VICKYGAMING0 | SOKY-DEX
-# VERSION: 4.0 FINAL
+# VERSION: 5.0 FINAL
 # LINES: 1300+
-# FEATURES: FULL REVERSE ENGINEERING + FIREBASE
+# STATUS: PRODUCTION READY
 # =============================================
 
 import os
@@ -23,6 +23,7 @@ import requests
 import binascii
 import struct
 import time
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union
@@ -41,6 +42,15 @@ from telegram.ext import (
     filters,
     ConversationHandler
 )
+
+# =============================================
+# LOGGING SETUP
+# =============================================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # =============================================
 # TIMEZONE SETUP
@@ -141,6 +151,12 @@ c.execute('''CREATE TABLE IF NOT EXISTS blacklisted_keys (
     created_at TEXT
 )''')
 
+# Settings Table
+c.execute('''CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)''')
+
 conn.commit()
 
 # =============================================
@@ -150,28 +166,32 @@ def fb_get(path: str) -> Optional[dict]:
     try:
         r = requests.get(f"{FIREBASE_URL}/{path}.json", timeout=10)
         return r.json() if r.status_code == 200 else None
-    except:
+    except Exception as e:
+        logger.error(f"Firebase GET error: {e}")
         return None
 
 def fb_put(path: str, data: dict) -> bool:
     try:
         r = requests.put(f"{FIREBASE_URL}/{path}.json", json=data, timeout=10)
         return r.status_code in [200, 201]
-    except:
+    except Exception as e:
+        logger.error(f"Firebase PUT error: {e}")
         return False
 
 def fb_patch(path: str, data: dict) -> bool:
     try:
         r = requests.patch(f"{FIREBASE_URL}/{path}.json", json=data, timeout=10)
         return r.status_code in [200, 201]
-    except:
+    except Exception as e:
+        logger.error(f"Firebase PATCH error: {e}")
         return False
 
 def fb_delete(path: str) -> bool:
     try:
         r = requests.delete(f"{FIREBASE_URL}/{path}.json", timeout=10)
         return r.status_code in [200, 204]
-    except:
+    except Exception as e:
+        logger.error(f"Firebase DELETE error: {e}")
         return False
 
 # =============================================
@@ -900,77 +920,36 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     
     if not args:
-        await update.message.reply_text("❌ Usage: /redeem <KEY>\nExample: /redeem VICKY")
+        await update.message.reply_text("❌ Usage: /redeem <KEY>\nExample: /redeem ABC123XYZ")
         return
     
     key = args[0].upper()
-    
-    # ----- FIREBASE SE CHECK -----
-    import requests
-    firebase_url = f"https://mn-rohan-default-rtdb.firebaseio.com/keys/{key}.json"
-    
-    try:
-        response = requests.get(firebase_url, timeout=10)
-        if response.status_code == 200:
-            key_data = response.json()
-            if key_data and not key_data.get('used_by'):
-                # Key exists in Firebase and is unused
-                key_type = key_data.get('type', 'member')
-                days = {'member': 30, 'pro': 60, 'vip': 90, 'lifetime': 3650}
-                expiry = (now_ist() + timedelta(days=days.get(key_type, 30))).isoformat()
-                
-                # Update SQLite
-                c.execute(
-                    "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
-                    (key_type, key, expiry, now_ist().isoformat(), user_id)
-                )
-                conn.commit()
-                
-                # Mark key as used in Firebase
-                requests.patch(
-                    f"https://mn-rohan-default-rtdb.firebaseio.com/keys/{key}.json",
-                    json={'used_by': user_id, 'used_at': now_ist().isoformat()}
-                )
-                
-                await update.message.reply_text(
-                    f"✅ **Key Redeemed Successfully!**\n\n"
-                    f"🔑 Key: `{key}`\n"
-                    f"📦 Type: `{key_type}`\n"
-                    f"📅 Expires: `{expiry[:10]}`\n"
-                    f"📊 Days Left: `{days.get(key_type, 30)}` days"
-                )
-                log_action(user_id, "REDEEM_FIREBASE", f"{key_type}:{key}")
-                return
-            else:
-                await update.message.reply_text("❌ Invalid or already used key")
-                return
-    except Exception as e:
-        print(f"[ERROR] Firebase check failed: {e}")
-        # Fallback to SQLite check
-        pass
-    
-    # ----- SQLITE FALLBACK -----
-    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL", (key,))
-    key_data = c.fetchone()
-    if key_data:
-        key_type = key_data[1]
-        days = {'member': 30, 'pro': 60, 'vip': 90, 'lifetime': 3650}
-        expiry = (now_ist() + timedelta(days=days.get(key_type, 30))).isoformat()
-        
-        c.execute(
-            "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
-            (key_type, key, expiry, now_ist().isoformat(), user_id)
-        )
-        c.execute("UPDATE keys SET used_by=?, used_at=? WHERE key=?", (user_id, now_ist().isoformat(), key))
-        conn.commit()
-        
-        await update.message.reply_text(f"✅ Key redeemed from local DB!\nType: {key_type}")
+    success, msg = redeem_key(user_id, key)
+    await update.message.reply_text(msg)
+    if success:
+        update_user_activity(user_id)
+
+# ----- MYKEY -----
+async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        await update.message.reply_text("❌ Not registered. Use /start")
         return
     
-    # ----- KEY NOT FOUND -----
-    await update.message.reply_text("❌ Invalid or already used key")
-
-
+    await update.message.reply_text(
+        f"🔑 **Your Key Info**\n\n"
+        f"Type: `{user[2]}`\n"
+        f"Key: `{user[3] or 'None'}`\n"
+        f"Login: `{user[4][:10] if user[4] else 'N/A'}`\n"
+        f"Expires: `{user[5][:10] if user[5] else 'N/A'}`\n"
+        f"Days Left: `{days_left(user[5])}`\n"
+        f"Used: `{user[7] if user[7] else 0}` times\n"
+        f"Analysis: `{user[8] if user[8] else 0}`\n"
+        f"Patches: `{user[9] if user[9] else 0}`\n"
+        f"Banned: `{'Yes' if user[6] else 'No'}`"
+    )
+    update_user_activity(user_id)
 
 # ----- ANALYZE -----
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1006,7 +985,6 @@ async def patch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     args = context.args
     if len(args) >= 2:
-        # Direct patch: /patch old_url new_url
         context.user_data['patch_data'] = {
             'type': 'url',
             'old': args[0],
@@ -1019,7 +997,6 @@ async def patch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['action'] = 'patch'
         return WAITING_SO
     
-    # Interactive patch
     await update.message.reply_text(
         "🔧 **Patch Options**\n\n"
         "Send a `.so` file and tell me what to patch:\n\n"
