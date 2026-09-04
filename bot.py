@@ -3,9 +3,9 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 9.0 FINAL
-# LINES: 1400+
-# STATUS: PRODUCTION READY
+# VERSION: 10.0 FINAL
+# LINES: 1450+
+# STATUS: PRODUCTION READY — ALL FIXED
 # ================================================================
 
 import os
@@ -256,29 +256,47 @@ def create_user(user_id: int, username: str):
     log_action(user_id, "REGISTER")
     return True
 
+def update_user_activity(user_id: int):
+    c.execute("UPDATE users SET used_count = used_count + 1, last_activity = ? WHERE user_id = ?",
+              (now_ist().isoformat(), user_id))
+    conn.commit()
+
+# ================================================================
+# CHECK ACCESS — FIXED WITH FIREBASE FORCE SYNC
+# ================================================================
 def check_access(user_id: int) -> Tuple[bool, str]:
-    # ===== STEP 1: FIREBASE SE BAN STATUS CHECK (PRIORITY) =====
+    # ===== STEP 1: FORCE SYNC — FIREBASE SE BAN STATUS READ KARO =====
     try:
         fb_url = f"{FIREBASE_URL}/users/{user_id}/is_banned.json"
         response = requests.get(fb_url, timeout=5)
         if response.status_code == 200:
             fb_banned = response.json()
+            # Firebase se jo value aayi, usko SQLite me UPDATE karo
             if fb_banned == 1:
+                c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
+                conn.commit()
                 return False, "⛔ You are banned"
             elif fb_banned == 0:
                 c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
                 conn.commit()
+                # SQLite update ho gaya
+        else:
+            # Firebase me user nahi hai, fallback to SQLite
+            pass
     except Exception as e:
-        print(f"Firebase check failed: {e}")
+        print(f"Firebase sync error: {e}")
     
-    # ===== STEP 2: SQLITE CHECK (FALLBACK) =====
+    # ===== STEP 2: SQLITE CHECK (AB SYNCED HAI) =====
     user = get_user(user_id)
     if not user:
         return False, "❌ Not registered. Use /start"
+    
     if user[6] == 1:
         return False, "⛔ You are banned"
+    
     if user[2] == 'inactive' or user[2] is None:
         return False, "🔑 No active key. Use /redeem"
+    
     if user[5]:
         try:
             exp = datetime.fromisoformat(user[5])
@@ -286,12 +304,8 @@ def check_access(user_id: int) -> Tuple[bool, str]:
                 return False, "⏳ Key expired. Use /redeem"
         except:
             pass
+    
     return True, "✅ Access granted"
-
-def update_user_activity(user_id: int):
-    c.execute("UPDATE users SET used_count = used_count + 1, last_activity = ? WHERE user_id = ?",
-              (now_ist().isoformat(), user_id))
-    conn.commit()
 
 # ================================================================
 # REDEEM KEY SYSTEM
@@ -777,11 +791,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     left = days_left(expiry)
     
     msg = f"""
-╔══════════════════════════════════════╗
+╔═════════════════════════════════
 ║          🗡️ VTX DEX BOT             ║
 ║     Professional Reverse Engineering ║
 ║     Developer: {DEV_NAME}             ║
-╚══════════════════════════════════════╝
+╚═════════════════════════════════
 
 👤 User: @{username}
 🔑 Key Type: {key_type}
@@ -1230,7 +1244,7 @@ async def process_rootpatch(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     os.remove(file_path)
 
 # ================================================================
-# ADMIN COMMANDS
+# ADMIN COMMANDS — FIXED BAN/UNBAN WITH VERIFICATION
 # ================================================================
 
 async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1321,6 +1335,9 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
+# ================================================================
+# BAN — FIXED WITH VERIFICATION
+# ================================================================
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Admin only")
@@ -1333,16 +1350,36 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         user_id = int(args[0])
+        
+        # STEP 1: SQLite UPDATE
         c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
         conn.commit()
+        
+        # STEP 2: Firebase UPDATE
         fb_patch(f"users/{user_id}", {'is_banned': 1})
-        await update.message.reply_text(f"✅ User {user_id} banned")
+        
+        # STEP 3: VERIFY — Firebase se read karke confirm karo
+        fb_url = f"{FIREBASE_URL}/users/{user_id}/is_banned.json"
+        response = requests.get(fb_url, timeout=5)
+        if response.status_code == 200:
+            fb_banned = response.json()
+            if fb_banned == 1:
+                await update.message.reply_text(f"✅ User {user_id} banned successfully (verified)")
+            else:
+                await update.message.reply_text(f"⚠️ User {user_id} banned but Firebase sync pending")
+        else:
+            await update.message.reply_text(f"✅ User {user_id} banned (SQLite updated)")
+        
         log_action(ADMIN_ID, "BAN", str(user_id))
+        
     except ValueError:
         await update.message.reply_text("❌ Invalid user ID. Must be a number.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+# ================================================================
+# UNBAN — FIXED WITH VERIFICATION AND FORCE SYNC
+# ================================================================
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Admin only")
@@ -1355,11 +1392,30 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         user_id = int(args[0])
+        
+        # STEP 1: SQLite UPDATE
         c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
         conn.commit()
+        
+        # STEP 2: Firebase UPDATE
         fb_patch(f"users/{user_id}", {'is_banned': 0})
-        await update.message.reply_text(f"✅ User {user_id} unbanned")
+        
+        # STEP 3: VERIFY — Firebase se read karke confirm karo
+        fb_url = f"{FIREBASE_URL}/users/{user_id}/is_banned.json"
+        response = requests.get(fb_url, timeout=5)
+        if response.status_code == 200:
+            fb_banned = response.json()
+            if fb_banned == 0:
+                await update.message.reply_text(f"✅ User {user_id} unbanned successfully (verified)")
+            else:
+                # Force sync again
+                fb_patch(f"users/{user_id}", {'is_banned': 0})
+                await update.message.reply_text(f"✅ User {user_id} unbanned (forced sync)")
+        else:
+            await update.message.reply_text(f"✅ User {user_id} unbanned (SQLite updated)")
+        
         log_action(ADMIN_ID, "UNBAN", str(user_id))
+        
     except ValueError:
         await update.message.reply_text("❌ Invalid user ID. Must be a number.")
     except Exception as e:
@@ -1401,8 +1457,40 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 Developer: {DEV_NAME}"
     )
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    
+    msg = ' '.join(args)
+    c.execute("SELECT user_id FROM users WHERE is_banned=0")
+    users = c.fetchall()
+    
+    sent = 0
+    for u in users:
+        try:
+            await context.bot.send_message(
+                u[0],
+                f"📢 BROADCAST\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{msg}\n\n"
+                f"────────────────────────────────────\n"
+                f"📌 VTX DEX Bot"
+            )
+            sent += 1
+            time.sleep(0.5)
+        except:
+            pass
+    
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
+    log_action(ADMIN_ID, "BROADCAST", msg)
+
 # ================================================================
-# CALLBACK HANDLER — FIXED FOR HELP & BUY BUTTONS
+# CALLBACK HANDLER
 # ================================================================
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1442,6 +1530,7 @@ app.add_handler(CommandHandler("logs", logs))
 app.add_handler(CommandHandler("ban", ban))
 app.add_handler(CommandHandler("unban", unban))
 app.add_handler(CommandHandler("stats", stats))
+app.add_handler(CommandHandler("broadcast", broadcast))
 
 # File Handler
 app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
