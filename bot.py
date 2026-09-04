@@ -900,36 +900,77 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     
     if not args:
-        await update.message.reply_text("❌ Usage: /redeem <KEY>\nExample: /redeem ABC123XYZ")
+        await update.message.reply_text("❌ Usage: /redeem <KEY>\nExample: /redeem VICKY")
         return
     
     key = args[0].upper()
-    success, msg = redeem_key(user_id, key)
-    await update.message.reply_text(msg)
-    if success:
-        update_user_activity(user_id)
-
-# ----- MYKEY -----
-async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    if not user:
-        await update.message.reply_text("❌ Not registered. Use /start")
+    
+    # ----- FIREBASE SE CHECK -----
+    import requests
+    firebase_url = f"https://mn-rohan-default-rtdb.firebaseio.com/keys/{key}.json"
+    
+    try:
+        response = requests.get(firebase_url, timeout=10)
+        if response.status_code == 200:
+            key_data = response.json()
+            if key_data and not key_data.get('used_by'):
+                # Key exists in Firebase and is unused
+                key_type = key_data.get('type', 'member')
+                days = {'member': 30, 'pro': 60, 'vip': 90, 'lifetime': 3650}
+                expiry = (now_ist() + timedelta(days=days.get(key_type, 30))).isoformat()
+                
+                # Update SQLite
+                c.execute(
+                    "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
+                    (key_type, key, expiry, now_ist().isoformat(), user_id)
+                )
+                conn.commit()
+                
+                # Mark key as used in Firebase
+                requests.patch(
+                    f"https://mn-rohan-default-rtdb.firebaseio.com/keys/{key}.json",
+                    json={'used_by': user_id, 'used_at': now_ist().isoformat()}
+                )
+                
+                await update.message.reply_text(
+                    f"✅ **Key Redeemed Successfully!**\n\n"
+                    f"🔑 Key: `{key}`\n"
+                    f"📦 Type: `{key_type}`\n"
+                    f"📅 Expires: `{expiry[:10]}`\n"
+                    f"📊 Days Left: `{days.get(key_type, 30)}` days"
+                )
+                log_action(user_id, "REDEEM_FIREBASE", f"{key_type}:{key}")
+                return
+            else:
+                await update.message.reply_text("❌ Invalid or already used key")
+                return
+    except Exception as e:
+        print(f"[ERROR] Firebase check failed: {e}")
+        # Fallback to SQLite check
+        pass
+    
+    # ----- SQLITE FALLBACK -----
+    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL", (key,))
+    key_data = c.fetchone()
+    if key_data:
+        key_type = key_data[1]
+        days = {'member': 30, 'pro': 60, 'vip': 90, 'lifetime': 3650}
+        expiry = (now_ist() + timedelta(days=days.get(key_type, 30))).isoformat()
+        
+        c.execute(
+            "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
+            (key_type, key, expiry, now_ist().isoformat(), user_id)
+        )
+        c.execute("UPDATE keys SET used_by=?, used_at=? WHERE key=?", (user_id, now_ist().isoformat(), key))
+        conn.commit()
+        
+        await update.message.reply_text(f"✅ Key redeemed from local DB!\nType: {key_type}")
         return
     
-    await update.message.reply_text(
-        f"🔑 **Your Key Info**\n\n"
-        f"Type: `{user[2]}`\n"
-        f"Key: `{user[3] or 'None'}`\n"
-        f"Login: `{user[4][:10] if user[4] else 'N/A'}`\n"
-        f"Expires: `{user[5][:10] if user[5] else 'N/A'}`\n"
-        f"Days Left: `{days_left(user[5])}`\n"
-        f"Used: `{user[7] if user[7] else 0}` times\n"
-        f"Analysis: `{user[8] if user[8] else 0}`\n"
-        f"Patches: `{user[9] if user[9] else 0}`\n"
-        f"Banned: `{'Yes' if user[6] else 'No'}`"
-    )
-    update_user_activity(user_id)
+    # ----- KEY NOT FOUND -----
+    await update.message.reply_text("❌ Invalid or already used key")
+
+
 
 # ----- ANALYZE -----
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
