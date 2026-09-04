@@ -257,6 +257,15 @@ def create_user(user_id: int, username: str):
     return True
 
 def check_access(user_id: int) -> Tuple[bool, str]:
+    # First check Firebase for ban status
+    try:
+        fb_data = fb_get(f"users/{user_id}/is_banned")
+        if fb_data == 1:
+            return False, "⛔ You are banned"
+    except:
+        pass
+    
+    # Then check SQLite
     user = get_user(user_id)
     if not user:
         return False, "❌ Not registered. Use /start"
