@@ -3,9 +3,9 @@
 # VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 10.0 FINAL
-# LINES: 1450+
-# STATUS: PRODUCTION READY — ALL FIXED
+# VERSION: 11.0 FINAL
+# LINES: 1500+
+# STATUS: PRODUCTION READY — ALL FEATURES
 # ================================================================
 
 import os
@@ -74,8 +74,9 @@ DUMP_DIR = "dumps"
 PATCH_DIR = "patches"
 TEMP_DIR = "temp"
 APK_DIR = "apks"
+JSON_DIR = "json_data"
 
-for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, APK_DIR]:
+for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, APK_DIR, JSON_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ================================================================
@@ -98,6 +99,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS users (
     total_analysis INTEGER DEFAULT 0,
     total_patches INTEGER DEFAULT 0,
     total_apk_patches INTEGER DEFAULT 0,
+    total_json_analysis INTEGER DEFAULT 0,
     last_activity TEXT,
     registered_date TEXT
 )''')
@@ -157,6 +159,15 @@ c.execute('''CREATE TABLE IF NOT EXISTS apk_patches_history (
     original_hash TEXT,
     patched_hash TEXT,
     so_files_patched INTEGER,
+    timestamp TEXT
+)''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS json_analysis_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    url TEXT,
+    data_keys INTEGER,
+    commands_count INTEGER,
     timestamp TEXT
 )''')
 
@@ -271,7 +282,6 @@ def check_access(user_id: int) -> Tuple[bool, str]:
         response = requests.get(fb_url, timeout=5)
         if response.status_code == 200:
             fb_banned = response.json()
-            # Firebase se jo value aayi, usko SQLite me UPDATE karo
             if fb_banned == 1:
                 c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
                 conn.commit()
@@ -279,24 +289,17 @@ def check_access(user_id: int) -> Tuple[bool, str]:
             elif fb_banned == 0:
                 c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
                 conn.commit()
-                # SQLite update ho gaya
-        else:
-            # Firebase me user nahi hai, fallback to SQLite
-            pass
     except Exception as e:
         print(f"Firebase sync error: {e}")
     
-    # ===== STEP 2: SQLITE CHECK (AB SYNCED HAI) =====
+    # ===== STEP 2: SQLITE CHECK =====
     user = get_user(user_id)
     if not user:
         return False, "❌ Not registered. Use /start"
-    
     if user[6] == 1:
         return False, "⛔ You are banned"
-    
     if user[2] == 'inactive' or user[2] is None:
         return False, "🔑 No active key. Use /redeem"
-    
     if user[5]:
         try:
             exp = datetime.fromisoformat(user[5])
@@ -304,7 +307,6 @@ def check_access(user_id: int) -> Tuple[bool, str]:
                 return False, "⏳ Key expired. Use /redeem"
         except:
             pass
-    
     return True, "✅ Access granted"
 
 # ================================================================
@@ -313,12 +315,10 @@ def check_access(user_id: int) -> Tuple[bool, str]:
 def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     key = key.upper().strip()
     
-    # Check if key is blacklisted
     c.execute("SELECT * FROM keys WHERE key=? AND is_blacklisted=1", (key,))
     if c.fetchone():
         return False, "❌ This key has been blacklisted"
     
-    # STEP 1: Check Firebase
     fb_data = fb_get(f"keys/{key}")
     if fb_data and not fb_data.get('used_by'):
         key_type = fb_data.get('type', 'custom')
@@ -355,7 +355,6 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         log_action(user_id, "REDEEM", f"{key_type}:{key}")
         return True, f"✅ Key Redeemed!\n📦 Type: {key_type}\n📅 Expires: {expiry[:10]}\n📊 Days: {expiry_days}\n📱 Devices: {max_devices}"
     
-    # STEP 2: Check SQLite
     c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL AND is_blacklisted=0", (key,))
     key_data = c.fetchone()
     if key_data:
@@ -388,6 +387,80 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     
     log_action(user_id, "REDEEM_FAILED", key)
     return False, "❌ Invalid or already used key"
+
+# ================================================================
+# JSON URL ANALYSIS ENGINE
+# ================================================================
+def generate_json_report(json_data: dict, url: str, user_id: int) -> Tuple[str, dict, list]:
+    flattened = {}
+    commands = []
+    command_map = {}
+    
+    def flatten(obj, parent_key=''):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                new_key = f"{parent_key}.{key}" if parent_key else key
+                if isinstance(value, dict):
+                    flatten(value, new_key)
+                elif isinstance(value, list):
+                    flattened[new_key] = str(value)
+                    commands.append(f"/{key} {value}")
+                    command_map[f"/{key}"] = str(value)
+                else:
+                    flattened[new_key] = str(value)
+                    if isinstance(value, (str, int, bool)):
+                        commands.append(f"/{key} {value}")
+                        command_map[f"/{key}"] = str(value)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                flatten(item, f"{parent_key}[{i}]")
+    
+    flatten(json_data)
+    
+    report = []
+    report.append("=" * 60)
+    report.append("VTX DEX — JSON URL ANALYSIS REPORT")
+    report.append("=" * 60)
+    report.append(f"URL: {url}")
+    report.append(f"Date: {fmt_ist(now_ist())}")
+    report.append(f"User ID: {user_id}")
+    report.append("")
+    report.append("━" * 60)
+    report.append("📌 EXTRACTED SETTINGS / COMMANDS")
+    report.append("━" * 60)
+    report.append("")
+    
+    for key, value in flattened.items():
+        report.append(f"🔹 {key} = {value}")
+    
+    report.append("")
+    report.append("━" * 60)
+    report.append("📦 FULL JSON STRUCTURE")
+    report.append("━" * 60)
+    report.append(json.dumps(json_data, indent=2))
+    
+    report.append("")
+    report.append("━" * 60)
+    report.append("🔧 COMMANDS EXTRACTED")
+    report.append("━" * 60)
+    for cmd in commands[:50]:
+        report.append(cmd)
+    if len(commands) > 50:
+        report.append(f"... and {len(commands) - 50} more")
+    
+    report.append("")
+    report.append("━" * 60)
+    report.append("📋 COMMAND MAP (Key → Value)")
+    report.append("━" * 60)
+    for cmd, val in list(command_map.items())[:50]:
+        report.append(f"{cmd} → {val}")
+    
+    report.append("")
+    report.append("=" * 60)
+    report.append("END OF REPORT")
+    report.append("=" * 60)
+    
+    return '\n'.join(report), flattened, commands
 
 # ================================================================
 # .SO ANALYSIS ENGINE
@@ -430,15 +503,12 @@ class SOAnalyzer:
             
             self.text_data = self.data.decode('utf-8', errors='ignore')
             
-            # Firebase URLs
             fb_pattern = r'https://[a-zA-Z0-9-]+\.firebaseio\.com'
             self.result['firebase_urls'] = list(set(re.findall(fb_pattern, self.text_data)))
             
-            # API Keys
             api_pattern = r'AIza[0-9A-Za-z_-]{35}'
             self.result['api_keys'] = list(set(re.findall(api_pattern, self.text_data)))
             
-            # Flags
             flag_patterns = [
                 r'verify_active\s*=\s*([0-9]+)',
                 r'access_hours\s*=\s*([0-9]+)',
@@ -461,11 +531,9 @@ class SOAnalyzer:
                     if flag_name:
                         self.result['flags'][flag_name.group(1)] = matches[0]
             
-            # Strings
             str_pattern = r'[a-zA-Z0-9_\-\./\\@:]{4,}'
             self.result['strings'] = list(set(re.findall(str_pattern, self.text_data)))
             
-            # JSON
             json_pattern = r'\{[^{}]*\}'
             for match in re.findall(json_pattern, self.text_data):
                 try:
@@ -473,7 +541,6 @@ class SOAnalyzer:
                 except:
                     pass
             
-            # Offsets
             for url in self.result['firebase_urls']:
                 idx = self.text_data.find(url)
                 if idx != -1:
@@ -483,22 +550,18 @@ class SOAnalyzer:
                 if idx != -1:
                     self.result['offsets'][key] = hex(idx)
             
-            # Functions
             func_pattern = r'[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*\{'
             self.result['functions'] = list(set(re.findall(func_pattern, self.text_data)))[:30]
             
-            # Hex dump
             self.result['hex_dump'] = {
                 'offset': '0x0',
                 'hex': binascii.hexlify(self.data[:256]).decode('utf-8')
             }
             
-            # Sections
             section_pattern = r'\.(text|data|rodata|bss|init|fini|got|plt|dynsym|dynstr|hash|gnu\.hash)'
             sections = re.findall(section_pattern, self.text_data)
             self.result['sections'] = list(set(sections))
             
-            # Packer detection
             packers = [('UPX', 'UPX'), ('MPRESS', 'MPRESS'), ('ASPack', 'ASPack'), 
                        ('Themida', 'Themida'), ('VMProtect', 'VMProtect'), ('Enigma', 'Enigma')]
             for pattern, name in packers:
@@ -764,6 +827,7 @@ app = Application.builder().token(TOKEN).build()
 
 WAITING_SO = 1
 WAITING_APK = 2
+WAITING_JSON_URL = 3
 
 # ================================================================
 # COMMAND HANDLERS
@@ -791,11 +855,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     left = days_left(expiry)
     
     msg = f"""
-╔═════════════════════════════════
+╔══════════════════════════════════════╗
 ║          🗡️ VTX DEX BOT             ║
 ║     Professional Reverse Engineering ║
 ║     Developer: {DEV_NAME}             ║
-╚═════════════════════════════════
+╚══════════════════════════════════════╝
 
 👤 User: @{username}
 🔑 Key Type: {key_type}
@@ -817,6 +881,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   /dump       - Generate dump.txt
   /patch      - Patch .so file
   /rootpatch  - Bypass root detection in APK
+  /jsonurl    - Analyze JSON from URL
 
 🛡️ BYPASS TOOLS
   /rootbypass - Root bypass script
@@ -870,11 +935,116 @@ async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔍 Analysis: {user[9] if user[9] else 0}
 🔧 Patches: {user[10] if user[10] else 0}
 📱 APK Patches: {user[11] if user[11] else 0}
+📊 JSON Analysis: {user[12] if user[12] else 0}
 ⛔ Banned: {'Yes' if user[6] else 'No'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
     await update.message.reply_text(msg)
     update_user_activity(user_id)
+
+# ================================================================
+# JSON URL COMMAND — COMPLETE
+# ================================================================
+async def jsonurl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    access, msg = check_access(user_id)
+    if not access:
+        await update.message.reply_text(f"⛔ {msg}")
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ Usage: /jsonurl <JSON_URL>\n"
+            "Example: /jsonurl https://vplink.in/Vicky.json\n\n"
+            "I will fetch the JSON, extract all settings, and generate a report."
+        )
+        return
+    
+    url = args[0]
+    
+    # Validate URL
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            await update.message.reply_text("❌ Invalid URL. Please provide a full URL with http:// or https://")
+            return
+    except:
+        await update.message.reply_text("❌ Invalid URL format")
+        return
+    
+    await update.message.reply_text(f"🔍 Fetching JSON from:\n`{url}`\n\nPlease wait...")
+    
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        # Check if response is JSON
+        try:
+            json_data = response.json()
+        except json.JSONDecodeError:
+            await update.message.reply_text("❌ The URL does not return valid JSON data")
+            return
+        
+        # Generate report
+        report, flattened, commands = generate_json_report(json_data, url, user_id)
+        
+        # Save to history
+        c.execute(
+            """INSERT INTO json_analysis_history 
+            (user_id, url, data_keys, commands_count, timestamp) 
+            VALUES (?, ?, ?, ?, ?)""",
+            (user_id, url, len(flattened), len(commands), now_ist().isoformat())
+        )
+        conn.commit()
+        
+        # Update user stats
+        c.execute("UPDATE users SET total_json_analysis = total_json_analysis + 1 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        
+        # Save report to file
+        report_path = os.path.join(JSON_DIR, f"json_report_{user_id}_{int(time.time())}.txt")
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(report)
+        
+        # Send report
+        await update.message.reply_document(
+            document=open(report_path, 'rb'),
+            filename=f"json_analysis_{int(time.time())}.txt",
+            caption=f"✅ JSON Analysis Complete!\n\n"
+                    f"📊 Extracted: {len(flattened)} settings\n"
+                    f"🔧 Commands: {len(commands)}\n"
+                    f"📁 File: json_analysis_{int(time.time())}.txt"
+        )
+        
+        # Also send summary
+        summary = f"📊 JSON URL Analysis Summary\n"
+        summary += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        summary += f"🔗 URL: {url}\n"
+        summary += f"📊 Settings Found: {len(flattened)}\n"
+        summary += f"🔧 Commands Generated: {len(commands)}\n"
+        summary += f"📅 Analysis Date: {fmt_ist(now_ist())}\n\n"
+        
+        # Show top 5 settings
+        summary += "📌 Top Settings:\n"
+        for key, value in list(flattened.items())[:5]:
+            summary += f"  • {key} = {value}\n"
+        if len(flattened) > 5:
+            summary += f"  • ... and {len(flattened) - 5} more\n"
+        
+        await update.message.reply_text(summary)
+        
+        os.remove(report_path)
+        log_action(user_id, "JSONURL", url)
+        
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("❌ Timeout: URL took too long to respond (30 seconds)")
+    except requests.exceptions.ConnectionError:
+        await update.message.reply_text("❌ Connection error: Invalid URL or network issue")
+    except requests.exceptions.HTTPError as e:
+        await update.message.reply_text(f"❌ HTTP Error: {e.response.status_code} - {e.response.reason}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1048,6 +1218,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
   /dump       - Generate dump.txt
   /patch      - Patch .so file
   /rootpatch  - Bypass root detection in APK
+  /jsonurl    - Analyze JSON from URL
 
 🛡️ BYPASS TOOLS
   /rootbypass - Generate root bypass script
@@ -1244,7 +1415,7 @@ async def process_rootpatch(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     os.remove(file_path)
 
 # ================================================================
-# ADMIN COMMANDS — FIXED BAN/UNBAN WITH VERIFICATION
+# ADMIN COMMANDS
 # ================================================================
 
 async def genkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1351,14 +1522,11 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = int(args[0])
         
-        # STEP 1: SQLite UPDATE
         c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
         conn.commit()
         
-        # STEP 2: Firebase UPDATE
         fb_patch(f"users/{user_id}", {'is_banned': 1})
         
-        # STEP 3: VERIFY — Firebase se read karke confirm karo
         fb_url = f"{FIREBASE_URL}/users/{user_id}/is_banned.json"
         response = requests.get(fb_url, timeout=5)
         if response.status_code == 200:
@@ -1393,14 +1561,11 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = int(args[0])
         
-        # STEP 1: SQLite UPDATE
         c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
         conn.commit()
         
-        # STEP 2: Firebase UPDATE
         fb_patch(f"users/{user_id}", {'is_banned': 0})
         
-        # STEP 3: VERIFY — Firebase se read karke confirm karo
         fb_url = f"{FIREBASE_URL}/users/{user_id}/is_banned.json"
         response = requests.get(fb_url, timeout=5)
         if response.status_code == 200:
@@ -1408,7 +1573,6 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if fb_banned == 0:
                 await update.message.reply_text(f"✅ User {user_id} unbanned successfully (verified)")
             else:
-                # Force sync again
                 fb_patch(f"users/{user_id}", {'is_banned': 0})
                 await update.message.reply_text(f"✅ User {user_id} unbanned (forced sync)")
         else:
@@ -1441,6 +1605,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     patch_count = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM apk_patches_history")
     apk_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM json_analysis_history")
+    json_count = c.fetchone()[0]
     
     await update.message.reply_text(
         f"📊 VTX DEX STATISTICS\n"
@@ -1453,6 +1619,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔍 Analyses: {analysis_count}\n"
         f"🔧 Patches: {patch_count}\n"
         f"📱 APK Patches: {apk_count}\n"
+        f"📊 JSON Analyses: {json_count}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 Developer: {DEV_NAME}"
     )
@@ -1520,6 +1687,7 @@ app.add_handler(CommandHandler("rootbypass", rootbypass))
 app.add_handler(CommandHandler("antidebug", antidebug))
 app.add_handler(CommandHandler("pinning", pinning))
 app.add_handler(CommandHandler("frida", frida_cmd))
+app.add_handler(CommandHandler("jsonurl", jsonurl))
 app.add_handler(CommandHandler("buy", buy))
 app.add_handler(CommandHandler("help", help_cmd))
 
@@ -1552,6 +1720,7 @@ if __name__ == "__main__":
     print(f"📁 Dump Dir: {DUMP_DIR}")
     print(f"📁 Patch Dir: {PATCH_DIR}")
     print(f"📁 APK Dir: {APK_DIR}")
+    print(f"📁 JSON Dir: {JSON_DIR}")
     print("=" * 60)
     print("✅ Bot is ONLINE and READY!")
     print("=" * 60)
