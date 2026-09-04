@@ -1,26 +1,24 @@
-name: Deploy Telegram Bot
+name: Run Bot
 
 on:
   push:
-    branches: [ main ]
   schedule:
-    - cron: '0 */6 * * *'  # Har 6 ghante restart
+    - cron: '*/30 * * * *'
 
 jobs:
-  deploy:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          
-      - name: Install deps
-        run: pip install python-telegram-bot==20.0
-        
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install python-telegram-bot==20.8 requests==2.31.0 pytz==2024.1
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: python bot.py
