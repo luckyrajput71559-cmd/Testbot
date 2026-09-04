@@ -257,22 +257,34 @@ def create_user(user_id: int, username: str):
     return True
 
 def check_access(user_id: int) -> Tuple[bool, str]:
-    # First check Firebase for ban status
+    # ===== STEP 1: FIREBASE SE BAN STATUS CHECK (PRIORITY) =====
     try:
-        fb_data = fb_get(f"users/{user_id}/is_banned")
-        if fb_data == 1:
-            return False, "⛔ You are banned"
-    except:
-        pass
+        import requests
+        fb_url = f"{FIREBASE_URL}/users/{user_id}/is_banned.json"
+        response = requests.get(fb_url, timeout=5)
+        if response.status_code == 200:
+            fb_banned = response.json()
+            if fb_banned == 1:
+                return False, "⛔ You are banned"
+            # If Firebase says not banned, update SQLite to match
+            elif fb_banned == 0:
+                c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+                conn.commit()
+        # If user doesn't exist in Firebase, fallback to SQLite
+    except Exception as e:
+        print(f"Firebase check failed: {e}")
     
-    # Then check SQLite
+    # ===== STEP 2: SQLITE CHECK (FALLBACK) =====
     user = get_user(user_id)
     if not user:
         return False, "❌ Not registered. Use /start"
+    
     if user[6] == 1:
         return False, "⛔ You are banned"
+    
     if user[2] == 'inactive' or user[2] is None:
         return False, "🔑 No active key. Use /redeem"
+    
     if user[5]:
         try:
             exp = datetime.fromisoformat(user[5])
@@ -280,6 +292,7 @@ def check_access(user_id: int) -> Tuple[bool, str]:
                 return False, "⏳ Key expired. Use /redeem"
         except:
             pass
+    
     return True, "✅ Access granted"
 
 def update_user_activity(user_id: int):
@@ -1315,21 +1328,28 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Admin only")
         return
     
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /ban <user_id>")
+        await update.message.reply_text("Usage: /unban <user_id>")
         return
     
     try:
         user_id = int(args[0])
-        c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
+        
+        # Update SQLite
+        c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
         conn.commit()
-        await update.message.reply_text(f"✅ User {user_id} banned")
-        log_action(ADMIN_ID, "BAN", str(user_id))
+        
+        # Update Firebase
+        fb_patch(f"users/{user_id}", {'is_banned': 0})
+        
+        await update.message.reply_text(f"✅ User {user_id} unbanned")
+        log_action(ADMIN_ID, "UNBAN", str(user_id))
     except:
         await update.message.reply_text("❌ Invalid user ID")
 
