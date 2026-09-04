@@ -639,41 +639,60 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     key = args[0].upper()
-    success, msg = redeem_key(user_id, key)
-    await update.message.reply_text(msg)
-    log_action(user_id, "REDEEM_ATTEMPT", key)
-
-# ---- MYKEY ----
-async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    if not user:
-        await update.message.reply_text("❌ Not registered. Use /start")
+    
+    # ----- STEP 1: Check Firebase first -----
+    import requests
+    firebase_url = f"https://mn-rohan-default-rtdb.firebaseio.com/keys/{key}.json"
+    response = requests.get(firebase_url)
+    
+    if response.status_code == 200:
+        key_data = response.json()
+        if key_data and not key_data.get('used_by'):
+            # Key exists in Firebase and is unused
+            key_type = key_data.get('type', 'member')
+            days = {'member': 30, 'pro': 60, 'vip': 90, 'lifetime': 3650}
+            expiry = (get_ist_now() + timedelta(days=days.get(key_type, 30))).isoformat()
+            
+            # Update user in SQLite
+            c.execute(
+                "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
+                (key_type, key, expiry, get_ist_now().isoformat(), user_id)
+            )
+            conn.commit()
+            
+            # Mark key as used in Firebase
+            requests.patch(firebase_url, json={'used_by': user_id, 'used_at': get_ist_now().isoformat()})
+            
+            await update.message.reply_text(
+                f"✅ Key redeemed from Firebase!\n"
+                f"Type: {key_type}\n"
+                f"Expires: {expiry[:10]}"
+            )
+            log_action(user_id, "REDEEM_FIREBASE", f"{key_type}:{key}")
+            return
+    
+    # ----- STEP 2: Check SQLite (local) -----
+    c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL", (key,))
+    key_data = c.fetchone()
+    if key_data:
+        key_type = key_data[1]
+        days = {'member': 30, 'pro': 60, 'vip': 90, 'lifetime': 3650}
+        expiry = (get_ist_now() + timedelta(days=days.get(key_type, 30))).isoformat()
+        
+        c.execute(
+            "UPDATE users SET key_type=?, key_value=?, expiry_date=?, login_date=? WHERE user_id=?",
+            (key_type, key, expiry, get_ist_now().isoformat(), user_id)
+        )
+        c.execute("UPDATE keys SET used_by=?, used_at=? WHERE key=?", (user_id, get_ist_now().isoformat(), key))
+        conn.commit()
+        
+        await update.message.reply_text(f"✅ Key redeemed from local DB!\nType: {key_type}")
+        log_action(user_id, "REDEEM_SQLITE", f"{key_type}:{key}")
         return
     
-    expiry = user[5]
-    days_left = "N/A"
-    if expiry:
-        try:
-            exp_date = datetime.fromisoformat(expiry)
-            days_left = (exp_date - get_ist_now()).days
-            if days_left < 0:
-                days_left = "Expired"
-            else:
-                days_left = f"{days_left} days"
-        except:
-            days_left = "N/A"
-    
-    await update.message.reply_text(
-        f"🔑 **Your Key Info**\n\n"
-        f"Type: `{user[2]}`\n"
-        f"Key: `{user[3] or 'None'}`\n"
-        f"Login: `{user[4][:10] if user[4] else 'N/A'}`\n"
-        f"Expires: `{expiry[:10] if expiry else 'N/A'}`\n"
-        f"Days Left: `{days_left}`\n"
-        f"Used: `{user[7] if user[7] else 0}` times\n"
-        f"Banned: `{'Yes' if user[6] else 'No'}`"
-    )
+    # ----- STEP 3: Key not found anywhere -----
+    await update.message.reply_text("❌ Invalid or already used key")
+    log_action(user_id, "REDEEM_FAILED", key)
 
 # ---- ANALYZE ----
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
