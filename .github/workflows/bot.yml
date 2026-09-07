@@ -33,9 +33,9 @@ jobs:
       
       - name: Run Bot
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          ADMIN_ID: ${{ secrets.ADMIN_ID }}
-          FIREBASE_URL: "https://mn-rohan-default-rtdb.firebaseio.com"
+  TELEGRAM_TOKEN: "8256413457:AAGurkdBHnvK7h3CZPx0lleqxEZuGnKm7dA"
+  ADMIN_ID: "5510702228"
+  FIREBASE_URL: "https://mn-rohan-default-rtdb.firebaseio.com"
         run: |
           python bot.py
       
