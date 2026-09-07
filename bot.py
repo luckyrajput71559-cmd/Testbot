@@ -63,7 +63,7 @@ except ImportError:
 # ================================================================
 # CONFIGURATION
 # ================================================================
-TOKEN = os.getenv("TELEGRAM_TOKEN") or "8256413457:AAHpVhcgT-oZJIoVJZ2pdwJuBxja9lBj-WI"
+TOKEN = os.getenv("TELEGRAM_TOKEN") or "8859660196:AAFnaqQAFo_DHZ3lEYRyNAEgG54IscXW8vg"
 ADMIN_ID = int(os.getenv("ADMIN_ID") or "5510702228")
 BOT_NAME = "VTX DEX"
 DEV_NAME = "@VICKYGAMING0"
