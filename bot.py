@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ================================================================
-# VTX DEX — ULTIMATE REVERSE ENGINEERING BOT
+# VTX DEX — ULTIMATE REVERSE ENGINEERING BOT v24.0
 # ================================================================
 # DEVELOPER: @VICKYGAMING0
-# VERSION: 23.0 FINAL
-# LINES: 1500+
+# VERSION: 24.0 FINAL
+# LINES: 1600+
 # ================================================================
 
 import os
@@ -73,8 +73,9 @@ DUMP_DIR = "dumps"
 PATCH_DIR = "patches"
 TEMP_DIR = "temp"
 JSON_DIR = "json_data"
+ARMKILLER_DIR = "armkiller_outputs"
 
-for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, JSON_DIR]:
+for d in [DUMP_DIR, PATCH_DIR, TEMP_DIR, JSON_DIR, ARMKILLER_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ================================================================
@@ -97,6 +98,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS users (
     total_dumps INTEGER DEFAULT 0,
     total_repacks INTEGER DEFAULT 0,
     total_json_analysis INTEGER DEFAULT 0,
+    total_armkiller INTEGER DEFAULT 0,
     last_activity TEXT,
     registered_date TEXT
 )''')
@@ -137,6 +139,16 @@ c.execute('''CREATE TABLE IF NOT EXISTS repack_history (
     patched_file TEXT,
     old_url TEXT,
     new_url TEXT,
+    timestamp TEXT
+)''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS armkiller_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    original_file TEXT,
+    output_file TEXT,
+    original_size INTEGER,
+    output_size INTEGER,
     timestamp TEXT
 )''')
 
@@ -426,58 +438,81 @@ def generate_dump_with_radar(file_path: str) -> Tuple[str, List[str], List[dict]
     return '\n'.join(lines), all_urls, json_structures
 
 # ================================================================
-# REPACK — SIMPLE REPLACE
+# ARM KILLER — REMOVE ARM LIBRARIES FROM APK
 # ================================================================
-def repack_so(file_path: str, old_url: str, new_url: str) -> Tuple[bool, Optional[str], str]:
+def arm_killer_process(apk_path: str) -> Tuple[bool, Optional[str], str, int, int]:
+    """
+    Remove ARM native libraries from APK
+    Returns: (success, output_path, message, original_size, output_size)
+    """
     try:
-        with open(file_path, 'rb') as f:
-            data = f.read()
+        temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
+        output_path = os.path.join(ARMKILLER_DIR, f"armkilled_{int(time.time())}_{os.path.basename(apk_path)}")
         
-        text_data = data.decode('utf-8', errors='ignore')
-        original = text_data
+        original_size = os.path.getsize(apk_path)
         
-        text_data = text_data.replace(old_url, new_url)
+        # Extract APK
+        with zipfile.ZipFile(apk_path, 'r') as zf:
+            zf.extractall(temp_dir)
         
-        if text_data == original:
-            return False, None, "URL not found in file"
+        # Remove ARM libraries
+        lib_dir = os.path.join(temp_dir, "lib")
+        removed_count = 0
+        if os.path.exists(lib_dir):
+            arm_dirs = ["armeabi", "armeabi-v7a", "arm64-v8a", "armv7a"]
+            for arm_dir in arm_dirs:
+                target = os.path.join(lib_dir, arm_dir)
+                if os.path.exists(target):
+                    shutil.rmtree(target)
+                    removed_count += 1
         
-        output_path = os.path.join(PATCH_DIR, f"repacked_{os.path.basename(file_path)}")
-        with open(output_path, 'wb') as f:
-            f.write(text_data.encode('utf-8', errors='ignore'))
+        # Also check jni directory
+        jni_dir = os.path.join(temp_dir, "jni")
+        if os.path.exists(jni_dir):
+            arm_dirs = ["armeabi", "armeabi-v7a", "arm64-v8a"]
+            for arm_dir in arm_dirs:
+                target = os.path.join(jni_dir, arm_dir)
+                if os.path.exists(target):
+                    shutil.rmtree(target)
+                    removed_count += 1
         
-        return True, output_path, "URL replaced successfully"
+        if removed_count == 0:
+            shutil.rmtree(temp_dir)
+            return False, None, "No ARM libraries found in this APK", original_size, 0
+        
+        # Patch AndroidManifest.xml
+        manifest_path = os.path.join(temp_dir, "AndroidManifest.xml")
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            content = content.replace('android:extractNativeLibs="false"', '')
+            content = content.replace('android:extractNativeLibs="true"', '')
+            
+            if 'android:supportsRtl' in content:
+                content = content.replace(
+                    'android:supportsRtl="true"',
+                    'android:supportsRtl="true" android:extractNativeLibs="true"'
+                )
+            
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        
+        # Rebuild APK
+        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, temp_dir)
+                    zf.write(file_path, arcname)
+        
+        output_size = os.path.getsize(output_path)
+        shutil.rmtree(temp_dir)
+        
+        return True, output_path, f"✅ ARM libraries removed! ({removed_count} directories removed)", original_size, output_size
+        
     except Exception as e:
-        return False, None, str(e)
-
-# ================================================================
-# FRIDA HOOK
-# ================================================================
-def generate_frida_hook(func: str) -> str:
-    return f'''// VTX DEX - Frida Hook for {func}
-Java.perform(function() {{
-    console.log("[*] Hooking {func}...");
-    var classes = [
-        "com.example.app.MainActivity",
-        "com.example.app.Config",
-        "com.example.app.FlagManager",
-        "com.example.app.AuthManager",
-        "com.example.app.SecurityManager"
-    ];
-    for (var i = 0; i < classes.length; i++) {{
-        try {{
-            var target = Java.use(classes[i]);
-            if (target && target.{func}) {{
-                target.{func}.implementation = function() {{
-                    console.log("[*] {func} called");
-                    var result = this.{func}.apply(this, arguments);
-                    console.log("[*] Return: " + result);
-                    return result;
-                }};
-                console.log("[+] Hooked {func}");
-            }}
-        }} catch(e) {{}}
-    }}
-}});'''
+        return False, None, f"❌ Error: {str(e)}", 0, 0
 
 # ================================================================
 # JSON URL ANALYSIS
@@ -542,8 +577,7 @@ def analyze_json_from_url(url: str) -> Tuple[bool, str, dict, dict]:
 app = Application.builder().token(TOKEN).build()
 
 WAITING_SO = 1
-WAITING_REPACK_OLD = 2
-WAITING_REPACK_NEW = 3
+WAITING_ARMKILLER = 2
 
 # ================================================================
 # COMMAND HANDLERS
@@ -572,7 +606,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = f"""
 ╔══════════════════════════════════════╗
-║          🗡️ VTX DEX BOT             ║
+║          🗡️ VTX DEX BOT v24.0       ║
 ║     Professional Reverse Engineering ║
 ║     Developer: {DEV_NAME}             ║
 ╚══════════════════════════════════════╝
@@ -591,8 +625,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /redeem     - Activate key
 /mykey      - Check key
 /dump       - Dump + Radar 2 scan
-/repack     - Replace URL in .so
-/frida      - Generate Frida hook
+/armkiller  - Remove ARM libs from APK
 /jsonurl    - Analyze JSON from URL
 /help       - All commands
 /buy        - Pricing info
@@ -637,8 +670,8 @@ async def mykey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📱 Devices: {user[8] if user[8] else 1}
 🔄 Used: {user[7] if user[7] else 0} times
 📊 Dumps: {user[9] if user[9] else 0}
-📦 Repacks: {user[10] if user[10] else 0}
 📊 JSON Analyses: {user[11] if user[11] else 0}
+🔫 ArmKiller: {user[12] if user[12] else 0}
 ⛔ Banned: {'Yes' if user[6] else 'No'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -665,7 +698,7 @@ async def dump(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['action'] = 'dump'
     return WAITING_SO
 
-async def repack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def armkiller(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     access, msg = check_access(user_id)
     if not access:
@@ -673,38 +706,17 @@ async def repack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await update.message.reply_text(
-        "📤 Upload .so file for URL replacement + repack\n\n"
+        "📤 Upload APK file for ARM Killer\n\n"
         "I will:\n"
-        "• Extract all HTTPS URLs\n"
-        "• Show you the list\n"
-        "• Ask for OLD URL to replace\n"
-        "• Ask for NEW URL\n"
-        "• Repack and return patched .so"
+        "• Extract APK contents\n"
+        "• Remove all ARM libraries (armeabi, armeabi-v7a, arm64-v8a)\n"
+        "• Patch AndroidManifest.xml\n"
+        "• Rebuild APK without ARM code\n"
+        "• Return x86/x86_64 compatible APK\n\n"
+        "📌 This makes the APK run on emulators and x86 devices!"
     )
-    context.user_data['action'] = 'repack'
-    return WAITING_SO
-
-async def frida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    access, msg = check_access(user_id)
-    if not access:
-        await update.message.reply_text(f"⛔ {msg}")
-        return
-    
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Usage: /frida <function_name>\nExample: /frida verify_active")
-        return
-    
-    func = args[0]
-    script = generate_frida_hook(func)
-    await update.message.reply_document(
-        document=script.encode(),
-        filename=f"hook_{func}.js",
-        caption=f"🔫 Frida Hook for '{func}'\n\nInject: frida -U -f com.example.app -l hook_{func}.js"
-    )
-    log_action(user_id, "FRIDA", func)
-    update_user_activity(user_id)
+    context.user_data['action'] = 'armkiller'
+    return WAITING_ARMKILLER
 
 async def jsonurl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -771,15 +783,14 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"""
-📖 VTX DEX COMMANDS
+📖 VTX DEX COMMANDS v24.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /start      - Show menu
 /redeem     - Activate key
 /mykey      - Check key
 /dump       - Dump + Radar 2 scan
-/repack     - Replace URL in .so
-/frida      - Generate Frida hook
+/armkiller  - Remove ARM libs from APK
 /jsonurl    - Analyze JSON from URL
 /help       - All commands
 /buy        - Pricing info
@@ -815,10 +826,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if action == 'dump':
         await process_dump(update, context, file_path, processing_msg)
-    elif action == 'repack':
-        await process_repack(update, context, file_path, processing_msg)
+    elif action == 'armkiller':
+        await process_armkiller(update, context, file_path, processing_msg)
     else:
-        await processing_msg.edit_text("❌ Use a command first: /dump or /repack")
+        await processing_msg.edit_text("❌ Use a command first: /dump or /armkiller")
         os.remove(file_path)
 
 # ================================================================
@@ -856,126 +867,54 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
         os.remove(file_path)
 
-# ================================================================
-# REPACK PROCESS — SIMPLIFIED
-# ================================================================
-
-async def process_repack(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
+async def process_armkiller(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
     user_id = update.effective_user.id
     
-    await processing_msg.edit_text("🔍 Scanning .so file for URLs...")
+    await processing_msg.edit_text("🔫 Running ARM Killer...\n\n⏳ Extracting APK...")
     
     try:
-        with open(file_path, 'rb') as f:
-            data = f.read()
-        text_data = data.decode('utf-8', errors='ignore')
+        success, output_path, result_msg, original_size, output_size = arm_killer_process(file_path)
         
-        clean_pattern = r'https?://[a-zA-Z0-9\-\.]+(?:\.[a-zA-Z]{2,})+(?:/[a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=]*)?'
-        urls = list(set(re.findall(clean_pattern, text_data)))
-        urls = [u for u in urls if len(u) > 10 and ' ' not in u and '\n' not in u]
+        if success and output_path:
+            await processing_msg.edit_text("📤 Uploading processed APK...")
+            
+            size_reduction = ((original_size - output_size) / original_size) * 100 if original_size > 0 else 0
+            
+            caption = (
+                f"✅ ARM Killer Complete!\n\n"
+                f"📁 Original: {os.path.basename(file_path)}\n"
+                f"📦 Original Size: {original_size / (1024*1024):.2f} MB\n"
+                f"📦 New Size: {output_size / (1024*1024):.2f} MB\n"
+                f"📉 Reduction: {size_reduction:.1f}%\n"
+                f"{result_msg}\n\n"
+                f"📌 Now compatible with x86/x86_64 devices!"
+            )
+            
+            await update.message.reply_document(
+                document=open(output_path, 'rb'),
+                filename=os.path.basename(output_path),
+                caption=caption
+            )
+            
+            c.execute(
+                "INSERT INTO armkiller_history (user_id, original_file, output_file, original_size, output_size, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, os.path.basename(file_path), os.path.basename(output_path), original_size, output_size, now_ist().isoformat())
+            )
+            conn.commit()
+            
+            update_user_stats(user_id, "total_armkiller")
+            log_action(user_id, "ARMKILLER", os.path.basename(file_path))
+            
+            os.remove(output_path)
+        else:
+            await processing_msg.edit_text(f"❌ {result_msg}")
         
-        if not urls:
-            await processing_msg.edit_text("❌ No HTTPS URLs found in this .so file")
-            os.remove(file_path)
-            return
-        
-        url_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(urls)])
-        
+        os.remove(file_path)
         await processing_msg.delete()
-        
-        await update.message.reply_text(
-            f"📡 Found {len(urls)} URLs in the .so file\n\n"
-            f"{url_list}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📝 Enter the OLD URL to replace:\n"
-            f"(Copy-paste the exact URL from the list above)"
-        )
-        
-        context.user_data['repack_so'] = file_path
-        context.user_data['repack_urls'] = urls
-        context.user_data['repack_step'] = 'old_url'
-        return WAITING_REPACK_OLD
         
     except Exception as e:
         await processing_msg.edit_text(f"❌ Error: {str(e)}")
         os.remove(file_path)
-
-# ================================================================
-# REPACK CONVERSATION HANDLERS
-# ================================================================
-
-async def handle_repack_old_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    old_url = update.message.text.strip()
-    
-    if old_url.lower() == '/cancel':
-        await update.message.reply_text("❌ Repack cancelled")
-        context.user_data['repack_so'] = None
-        context.user_data['repack_urls'] = None
-        context.user_data['repack_step'] = None
-        return
-    
-    await update.message.reply_text(
-        f"🔧 OLD URL Selected: {old_url}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 Enter the NEW URL:\n"
-        f"(Paste the new URL you want to replace with)"
-    )
-    
-    context.user_data['repack_old_url'] = old_url
-    context.user_data['repack_step'] = 'new_url'
-    return WAITING_REPACK_NEW
-
-async def handle_repack_new_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    new_url = update.message.text.strip()
-    
-    old_url = context.user_data.get('repack_old_url')
-    so_path = context.user_data.get('repack_so')
-    
-    if not old_url or not so_path:
-        await update.message.reply_text("❌ Something went wrong. Please start /repack again.")
-        context.user_data['repack_step'] = None
-        return
-    
-    if new_url.lower() == '/cancel':
-        await update.message.reply_text("❌ Repack cancelled")
-        context.user_data['repack_so'] = None
-        context.user_data['repack_urls'] = None
-        context.user_data['repack_step'] = None
-        return
-    
-    await update.message.reply_text("🔄 Replacing URL and repacking...")
-    
-    try:
-        success, output_path, msg = repack_so(so_path, old_url, new_url)
-        
-        if success:
-            await update.message.reply_document(
-                document=open(output_path, 'rb'),
-                filename=f"repacked_{os.path.basename(so_path)}",
-                caption=f"✅ Repacked successfully!\nOld URL: {old_url}\nNew URL: {new_url}"
-            )
-            
-            c.execute(
-                "INSERT INTO repack_history (user_id, original_file, patched_file, old_url, new_url, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, os.path.basename(so_path), os.path.basename(output_path), old_url, new_url, now_ist().isoformat())
-            )
-            conn.commit()
-            
-            update_user_stats(user_id, "total_repacks")
-            log_action(user_id, "REPACK", f"{old_url}->{new_url}")
-            
-            os.remove(output_path)
-        else:
-            await update.message.reply_text(f"❌ {msg}")
-        
-        os.remove(so_path)
-        context.user_data['repack_so'] = None
-        context.user_data['repack_urls'] = None
-        context.user_data['repack_step'] = None
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # ================================================================
 # ADMIN COMMANDS
@@ -1135,8 +1074,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unused = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM json_analysis_history")
     json_count = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM repack_history")
-    repack_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM armkiller_history")
+    armkiller_count = c.fetchone()[0]
     
     await update.message.reply_text(
         f"📊 STATS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1146,7 +1085,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔑 Unused Keys: {unused}\n"
         f"📝 Logs: {log_count}\n"
         f"📊 JSON Analyses: {json_count}\n"
-        f"📦 Repacks: {repack_count}\n"
+        f"🔫 ArmKiller Uses: {armkiller_count}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 Developer: {DEV_NAME}"
     )
@@ -1169,7 +1108,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 u[0],
-                f"📢 BROADCAST\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n{msg}\n\n────────────────────────────────────\n📌 VTX DEX Bot"
+                f"📢 BROADCAST\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n{msg}\n\n────────────────────────────────────\n📌 VTX DEX Bot v24.0"
             )
             sent += 1
             time.sleep(0.5)
@@ -1202,8 +1141,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("redeem", redeem))
 app.add_handler(CommandHandler("mykey", mykey))
 app.add_handler(CommandHandler("dump", dump))
-app.add_handler(CommandHandler("repack", repack))
-app.add_handler(CommandHandler("frida", frida))
+app.add_handler(CommandHandler("armkiller", armkiller))
 app.add_handler(CommandHandler("jsonurl", jsonurl))
 app.add_handler(CommandHandler("buy", buy))
 app.add_handler(CommandHandler("help", help_cmd))
@@ -1216,8 +1154,6 @@ app.add_handler(CommandHandler("unban", unban))
 app.add_handler(CommandHandler("stats", stats))
 app.add_handler(CommandHandler("broadcast", broadcast))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_old_url))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_repack_new_url))
 app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 app.add_handler(CallbackQueryHandler(callback))
 
@@ -1227,11 +1163,12 @@ app.add_handler(CallbackQueryHandler(callback))
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🗡️ VTX DEX — ULTIMATE REVERSE ENGINEERING BOT")
+    print("🗡️ VTX DEX — ULTIMATE REVERSE ENGINEERING BOT v24.0")
     print("=" * 60)
     print(f"🔥 Developer: {DEV_NAME}")
     print(f"📊 Database: {DB_FILE}")
     print(f"👤 Admin ID: {ADMIN_ID}")
+    print(f"🔫 ArmKiller: ACTIVE")
     print("=" * 60)
     print("✅ Bot is ONLINE and READY!")
     print("=" * 60)
