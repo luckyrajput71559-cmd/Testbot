@@ -253,7 +253,7 @@ def ensure_arm_tools():
         raise Exception(f"Missing ARM tools: {', '.join(missing)}")
 
 # ================================================================
-# ARM KILLER CORE LOGIC (NON-ROOT)
+# ARM KILLER CORE LOGIC (NON-ROOT) — COMPLETE FIXED VERSION
 # ================================================================
 def arm_kill_apk(file_path: str) -> Tuple[bool, Optional[str], str]:
     """
@@ -276,43 +276,44 @@ def arm_kill_apk(file_path: str) -> Tuple[bool, Optional[str], str]:
         logger.info(f"Decompiling {file_path} with backsmali")
         cmd = f"java -jar {backsmali} d {file_path} -o {dec_dir}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        
         if result.returncode != 0:
             shutil.rmtree(dec_dir, ignore_errors=True)
-            return False, None, f"Decompilation failed: {result.stderr}"
+            return False, None, f"Decompilation failed: {result.stderr[:200]}"
+        
+        # Check if any smali files were generated
+        smali_files = subprocess.run(f"find {dec_dir} -name '*.smali' | wc -l", shell=True, capture_output=True, text=True)
+        if int(smali_files.stdout.strip()) == 0:
+            shutil.rmtree(dec_dir, ignore_errors=True)
+            return False, None, "No smali files generated. APK may be protected or corrupted."
         
         # Step 2: Patch smali files (remove signature checks)
         logger.info("Patching smali files...")
-        patch_cmd = f"find {dec_dir} -name '*.smali' -exec sed -i 's/if-eqz/if-nez/g' {{}} +"
-        subprocess.run(patch_cmd, shell=True)
-        
-        # Also patch common protection patterns
-        patch_patterns = [
-            ("invoke-virtual.*checkSignature", "invoke-virtual.*checkSignature # patched"),
-            ("const/4 v0, 0x0", "const/4 v0, 0x1"),
-        ]
-        for old, new in patch_patterns:
-            subprocess.run(f"find {dec_dir} -name '*.smali' -exec sed -i 's/{old}/{new}/g' {{}} +", shell=True)
+        subprocess.run(f"find {dec_dir} -name '*.smali' -exec sed -i 's/if-eqz/if-nez/g' {{}} +", shell=True)
         
         # Step 3: Rebuild APK
         logger.info("Rebuilding APK")
         output_path = os.path.join(PATCH_DIR, f"arm_killed_{os.path.basename(file_path)}")
+        
+        # axml2xml expects a directory with AndroidManifest.xml and smali/
         cmd = f"java -jar {axml2xml} b {dec_dir} -o {output_path}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        
         if result.returncode != 0:
             shutil.rmtree(dec_dir, ignore_errors=True)
-            return False, None, f"Rebuild failed: {result.stderr}"
+            return False, None, f"Rebuild failed: {result.stderr[:200]}"
         
         # Step 4: Sign with test keys
         logger.info("Signing APK")
-        pk8 = os.path.join(tool_dir, "testkey.pk8")
-        pem = os.path.join(tool_dir, "testkey.sbt")
-        # Use apksigner if available, else jarsigner
-        sign_cmd = f"jarsigner -keystore {tool_dir}/testkey.keystore -storepass test -keypass test {output_path} test"
-        # Since we have pk8/pem, use signapk if jarsigner not available
-        if not os.path.exists(os.path.join(tool_dir, "testkey.keystore")):
-            # Generate keystore on the fly
-            subprocess.run(f"keytool -genkey -v -keystore {tool_dir}/testkey.keystore -alias test -keyalg RSA -keysize 2048 -validity 10000 -storepass test -keypass test -dname 'CN=Test'", shell=True)
+        # Generate keystore if missing
+        keystore = os.path.join(tool_dir, "testkey.keystore")
+        if not os.path.exists(keystore):
+            subprocess.run(
+                f"keytool -genkey -v -keystore {keystore} -alias test -keyalg RSA -keysize 2048 -validity 10000 -storepass test -keypass test -dname 'CN=Test'",
+                shell=True
+            )
         
+        sign_cmd = f"jarsigner -keystore {keystore} -storepass test -keypass test {output_path} test"
         subprocess.run(sign_cmd, shell=True)
         
         # Cleanup
@@ -925,7 +926,7 @@ async def process_dump(update: Update, context: ContextTypes.DEFAULT_TYPE, file_
 async def process_armkill(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
     user_id = update.effective_user.id
     
-    await processing_msg.edit_text("🔫 Starting ARM Killer process...\n\n⏳ Downloading tools (if needed)...")
+    await processing_msg.edit_text("🔫 Starting ARM Killer process...\n\n⏳ Preparing tools...")
     
     try:
         # Ensure tools are downloaded
