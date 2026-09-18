@@ -391,40 +391,40 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
         panel_resp = requests.post(
             PANEL_URL,
             data={"game": "pubg", "user_key": key, "serial": str(user_id)},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Charset": "UTF-8"
+            },
             timeout=10
         )
         if panel_resp.status_code == 200:
             panel_data = panel_resp.json()
-         if panel_data.get('status') == True:
-    key_type = panel_data.get('data', {}).get('type', 'member')
-    max_devices = panel_data.get('data', {}).get('devices', 1)
-    
-    # Panel se EXP (expiry date) lo
-    panel_expiry = panel_data.get('data', {}).get('EXP', None)
-    
-    if panel_expiry:
-        # Panel ki expiry date use kar
-        try:
-            expiry = datetime.fromisoformat(panel_expiry).isoformat()
-        except:
-            expiry = (now_ist() + timedelta(days=30)).isoformat()
-    else:
-        # Fallback: days se calculate kar
-        expiry_days = panel_data.get('data', {}).get('days', 30)
-        expiry = (now_ist() + timedelta(days=expiry_days)).isoformat()
-    
-    # expiry_days bhi calculate kar
-    try:
-        exp_dt = datetime.fromisoformat(expiry)
-        expiry_days = max(1, (exp_dt - now_ist()).days)
-    except:
-        expiry_days = 30
+            if panel_data.get('status') == True:
+                key_type = panel_data.get('data', {}).get('type', 'member')
+                max_devices = panel_data.get('data', {}).get('devices', 1)
+                panel_expiry = panel_data.get('data', {}).get('EXP', None)
                 
-            c.execute(
-    """UPDATE users SET 
-    key_type=?, key_value=?, expiry_date=?, login_date=?, expiry_days=?, max_devices=? 
-    WHERE user_id=?""",
-    (key_type, key, expiry, now_ist().isoformat(), expiry_days, max_devices, user_id)
+                if panel_expiry:
+                    try:
+                        expiry = datetime.fromisoformat(panel_expiry).isoformat()
+                    except:
+                        expiry = (now_ist() + timedelta(days=30)).isoformat()
+                else:
+                    expiry_days = panel_data.get('data', {}).get('days', 30)
+                    expiry = (now_ist() + timedelta(days=expiry_days)).isoformat()
+                
+                try:
+                    exp_dt = datetime.fromisoformat(expiry)
+                    expiry_days = max(1, (exp_dt - now_ist()).days)
+                except:
+                    expiry_days = 30
+                
+                c.execute(
+                    """UPDATE users SET 
+                    key_type=?, key_value=?, expiry_date=?, login_date=?, expiry_days=?, max_devices=? 
+                    WHERE user_id=?""",
+                    (key_type, key, expiry, now_ist().isoformat(), expiry_days, max_devices, user_id)
                 )
                 conn.commit()
                 
