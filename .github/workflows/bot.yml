@@ -33,7 +33,7 @@ jobs:
 
       - name: Run Bot
         env:
-          TELEGRAM_TOKEN: ${{ 8859660196:AAFnaqQAFo_DHZ3lEYRyNAEgG54IscXW8vg }}
+          TELEGRAM_TOKEN: ${{8859660196:AAFnaqQAFo_DHZ3lEYRyNAEgG54IscXW8vg}}
           ADMIN_ID: ${{ 5510702228 }}
         run: |
           python bot.py
