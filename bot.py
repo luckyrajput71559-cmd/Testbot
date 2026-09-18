@@ -388,6 +388,7 @@ def check_access(user_id: int) -> Tuple[bool, str]:
 # REDEEM KEY
 # ================================================================
 def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
+def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
     key = key.upper().strip()
     
     c.execute("SELECT * FROM keys WHERE key=? AND is_blacklisted=1", (key,))
@@ -406,33 +407,34 @@ def redeem_key(user_id: int, key: str) -> Tuple[bool, str]:
                 key_type = panel_data.get('data', {}).get('type', 'member')
                 max_devices = panel_data.get('data', {}).get('devices', 1)
                 
-                # ★ PANEL SE DAYS/FLOAT LO ★
                 panel_days = panel_data.get('data', {}).get('days', None)
-
-if panel_days is not None:
-    try:
-        panel_days_float = float(panel_days)
-        
-        # Panel se hours bhi lo (agar available ho)
-        panel_hours = panel_data.get('data', {}).get('hours', None)
-        
-        if panel_hours is not None:
-            # Panel se hours directly aaye
-            expiry_hours = float(panel_hours)
-            expiry = (now_ist() + timedelta(hours=expiry_hours)).isoformat()
-            expiry_days = expiry_hours / 24
-        elif panel_days_float < 1:
-            # Days mein value hai, lekin 1 se kam — hours mein convert
-            expiry_hours = panel_days_float * 24
-            expiry = (now_ist() + timedelta(hours=expiry_hours)).isoformat()
-            expiry_days = panel_days_float
-        else:
-            # Days mein value hai
-            expiry_days = panel_days_float
-            expiry = (now_ist() + timedelta(days=expiry_days)).isoformat()
-    except:
-        expiry_days = 1.0
-        expiry = (now_ist() + timedelta(days=1)).isoformat()
+                
+                if panel_days is not None:
+                    try:
+                        panel_days_float = float(panel_days)
+                        if panel_days_float < 1:
+                            expiry_hours = panel_days_float * 24
+                            expiry = (now_ist() + timedelta(hours=expiry_hours)).isoformat()
+                            expiry_days = panel_days_float
+                        else:
+                            expiry_days = panel_days_float
+                            expiry = (now_ist() + timedelta(days=expiry_days)).isoformat()
+                    except:
+                        expiry_days = 1.0
+                        expiry = (now_ist() + timedelta(days=1)).isoformat()
+                else:
+                    panel_expiry = panel_data.get('data', {}).get('EXP', None)
+                    if panel_expiry:
+                        try:
+                            expiry = datetime.fromisoformat(panel_expiry).isoformat()
+                            exp_dt = datetime.fromisoformat(expiry)
+                            expiry_days = max(1.0, (exp_dt - now_ist()).total_seconds() / 86400)
+                        except:
+                            expiry_days = 1.0
+                            expiry = (now_ist() + timedelta(days=1)).isoformat()
+                    else:
+                        expiry_days = 1.0
+                        expiry = (now_ist() + timedelta(days=1)).isoformat()
                 
                 c.execute(
                     """UPDATE users SET 
@@ -443,16 +445,14 @@ if panel_days is not None:
                 conn.commit()
                 
                 log_action(user_id, "REDEEM", f"{key_type}:{key}")
-
-# Display message — hours ya days
-total_hours = expiry_days * 24
-
-if total_hours < 24:
-    display_time = f"{int(total_hours)} hours"
-else:
-    display_time = f"{int(expiry_days)} days"
-
-return True, f"✅ Key Redeemed!\n📦 Type: {key_type}\n📅 Expires: {expiry[:16]}\n📊 Duration: {display_time}\n📱 Devices: {max_devices}"
+                
+                total_hours = expiry_days * 24
+                if total_hours < 24:
+                    display_time = f"{int(total_hours)} hours"
+                else:
+                    display_time = f"{int(expiry_days)} days"
+                
+                return True, f"✅ Key Redeemed!\n📦 Type: {key_type}\n📅 Expires: {expiry[:16]}\n📊 Duration: {display_time}\n📱 Devices: {max_devices}"
             else:
                 return False, f"❌ {panel_data.get('reason', 'Invalid key')}"
         else:
