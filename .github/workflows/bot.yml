@@ -33,7 +33,7 @@ jobs:
 
       - name: Run Bot
         env:
-          TELEGRAM_TOKEN: "8256413457:AAGurkdBHnvK7h3CZPx0lleqxEZuGnKm7dA"
+          TELEGRAM_TOKEN: "8859660196:AAFnaqQAFo_DHZ3lEYRyNAEgG54IscXW8vg"
           ADMIN_ID: "5510702228"
           FIREBASE_URL: "https://mn-rohan-default-rtdb.firebaseio.com"
         run: |
