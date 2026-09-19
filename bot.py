@@ -1331,27 +1331,30 @@ async def process_recompile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 def sign_apk(apk_path: str) -> str:
     """APK ko V1 + V2 + V3 se sign karo"""
     tool_dir = os.path.abspath(TOOLS_DIR)
+    os.makedirs(tool_dir, exist_ok=True)
+    
     keystore = os.path.join(tool_dir, "testkey.keystore")
     alias = "test"
     storepass = "test"
     keypass = "test"
     
-    # Keystore bana
+    # ★ KEYSTORE BANA — AGAR NAHI HAI ★
     if not os.path.exists(keystore):
-        subprocess.run(
-            f"keytool -genkey -v -keystore {keystore} -alias {alias} -keyalg RSA -keysize 2048 -validity 10000 -storepass {storepass} -keypass {keypass} -dname 'CN=Test'",
-            shell=True
+        result = subprocess.run(
+            f"keytool -genkey -v -keystore {keystore} "
+            f"-alias {alias} -keyalg RSA -keysize 2048 -validity 10000 "
+            f"-storepass {storepass} -keypass {keypass} "
+            f"-dname 'CN=Test, OU=Dev, O=VTX, L=City, S=State, C=IN'",
+            shell=True, capture_output=True, text=True
         )
+        if result.returncode != 0:
+            return f"❌ Keystore failed: {result.stderr[:200]}"
     
-    # ★ apksigner DHOONDH — MULTIPLE PATHS ★
+    # ★ apksigner DHOONDH ★
     apksigner = None
     possible_paths = [
         shutil.which("apksigner"),
         "/usr/lib/android-sdk/build-tools/debian/apksigner",
-        "/usr/lib/android-sdk/build-tools/33.0.0/apksigner",
-        "/usr/lib/android-sdk/build-tools/34.0.0/apksigner",
-        "/opt/android-sdk/build-tools/33.0.0/apksigner",
-        os.path.expanduser("~/android-sdk/build-tools/33.0.0/apksigner"),
     ]
     
     for p in possible_paths:
@@ -1359,7 +1362,6 @@ def sign_apk(apk_path: str) -> str:
             apksigner = p
             break
     
-    # Glob se bhi dhoondh
     if not apksigner:
         import glob
         found = glob.glob("/usr/lib/android-sdk/build-tools/*/apksigner")
@@ -1367,7 +1369,7 @@ def sign_apk(apk_path: str) -> str:
             apksigner = found[0]
     
     if not apksigner:
-        return "❌ apksigner NOT FOUND — install android-sdk-build-tools"
+        return "❌ apksigner NOT FOUND"
     
     # ★ V1 + V2 + V3 SIGN ★
     cmd = (
