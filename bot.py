@@ -752,14 +752,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /redeem             - Activate key
 /mykey              - Check key
 /dump               - Dump + Radar 2 scan
-/armkiller          - Bypass ARM protection in APK
+/armkiller          - Bypass ARM protection
 /jsonurl            - Analyze JSON from URL
 /sign               - Sign APK
 /apktool            - Decompile/Recompile APK
 /smali              - Extract smali from APK
+/recompile          - Recompile edited zip
 /anti_debug         - Remove anti-debug
 /anti_screenshot    - Remove screenshot block
 /root_detect        - Remove root detection
+/add_root_detect    - Add root detection
+/add_screenshot_block - Add screenshot block
+/add_anti_debug     - Add anti-debug
 /help               - All commands
 /buy                - Pricing info
 
@@ -982,18 +986,24 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📖 VTX DEX COMMANDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+📌 COMMANDS:
+
 /start              - Show menu
 /redeem             - Activate key
 /mykey              - Check key
 /dump               - Dump + Radar 2 scan
-/armkiller          - Bypass ARM protection in APK
+/armkiller          - Bypass ARM protection
 /jsonurl            - Analyze JSON from URL
 /sign               - Sign APK
 /apktool            - Decompile/Recompile APK
 /smali              - Extract smali from APK
-/anti-debug         - Remove anti-debug
-/anti-screenshot    - Remove screenshot block
-/root-detect        - Remove root detection
+/recompile          - Recompile edited zip
+/anti_debug         - Remove anti-debug
+/anti_screenshot    - Remove screenshot block
+/root_detect        - Remove root detection
+/add_root_detect    - Add root detection
+/add_screenshot_block - Add screenshot block
+/add_anti_debug     - Add anti-debug
 /help               - All commands
 /buy                - Pricing info
 
