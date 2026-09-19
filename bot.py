@@ -1339,57 +1339,41 @@ def sign_apk(apk_path: str) -> str:
     keypass = "test"
     
     # ★ KEYSTORE BANA — AGAR NAHI HAI ★
-    if not os.path.exists(keystore):
-        result = subprocess.run(
-            f"keytool -genkey -v -keystore {keystore} "
-            f"-alias {alias} -keyalg RSA -keysize 2048 -validity 10000 "
-            f"-storepass {storepass} -keypass {keypass} "
-            f"-dname 'CN=Test, OU=Dev, O=VTX, L=City, S=State, C=IN'",
-            shell=True, capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return f"❌ Keystore failed: {result.stderr[:200]}"
+# ★ KEYSTORE BANA — AGAR NAHI HAI ★
+if not os.path.exists(keystore):
+    # keytool ka full path dhoondh
+    keytool_path = shutil.which("keytool")
     
-    # ★ apksigner DHOONDH ★
-    apksigner = None
-    possible_paths = [
-        shutil.which("apksigner"),
-        "/usr/lib/android-sdk/build-tools/debian/apksigner",
-    ]
+    if not keytool_path:
+        # Common paths
+        for path in [
+            "/usr/lib/jvm/java-17-openjdk-amd64/bin/keytool",
+            "/usr/lib/jvm/default-java/bin/keytool",
+            "/opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.11-9/x64/bin/keytool",
+        ]:
+            if os.path.exists(path):
+                keytool_path = path
+                break
     
-    for p in possible_paths:
-        if p and os.path.exists(p):
-            apksigner = p
-            break
+    if not keytool_path:
+        return "❌ keytool NOT FOUND"
     
-    if not apksigner:
-        import glob
-        found = glob.glob("/usr/lib/android-sdk/build-tools/*/apksigner")
-        if found:
-            apksigner = found[0]
-    
-    if not apksigner:
-        return "❌ apksigner NOT FOUND"
-    
-    # ★ V1 + V2 + V3 SIGN ★
-    cmd = (
-        f"{apksigner} sign "
-        f"--ks {keystore} "
-        f"--ks-key-alias {alias} "
-        f"--ks-pass pass:{storepass} "
-        f"--key-pass pass:{keypass} "
-        f"--v1-signing-enabled true "
-        f"--v2-signing-enabled true "
-        f"--v3-signing-enabled true "
-        f"{apk_path}"
+    # ★ SIMPLE DNAME USE KAR — COMMA NAHI ★
+    result = subprocess.run(
+        f'"{keytool_path}" -genkeypair -v '
+        f'-keystore "{keystore}" '
+        f'-alias {alias} '
+        f'-keyalg RSA '
+        f'-keysize 2048 '
+        f'-validity 10000 '
+        f'-storepass {storepass} '
+        f'-keypass {keypass} '
+        f'-dname "CN=Test"',
+        shell=True, capture_output=True, text=True
     )
     
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    
-    if result.returncode == 0:
-        return "✅ Signed with V1 + V2 + V3"
-    else:
-        return f"❌ apksigner failed: {result.stderr[:200]}"
+    if result.returncode != 0:
+        return f"❌ Keystore failed: {result.stderr[:200]}"
     
 def find_main_activity(dec_dir: str) -> str:
     """AndroidManifest se MainActivity dhoondho"""
