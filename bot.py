@@ -1090,6 +1090,27 @@ async def smali_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['action'] = 'smali'
     return WAITING_APK
 
+async def recompile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Edited zip se APK recompile karo"""
+    user_id = update.effective_user.id
+    access, msg = check_access(user_id)
+    if not access:
+        await update.message.reply_text(f"⛔ {msg}")
+        return
+    
+    await update.message.reply_text(
+        "🔨 RECOMPILE + SIGN\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Edited zip upload kar.\n\n"
+        "Main:\n"
+        "1️⃣ Zip extract karunga\n"
+        "2️⃣ APK recompile karunga\n"
+        "3️⃣ V1+V2+V3 sign karunga\n"
+        "4️⃣ Ready APK dunga\n\n"
+        "⚠️ Non-root, 100% working"
+    )
+    context.user_data['action'] = 'recompile'
+    return WAITING_APK
 
 async def process_smali(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, processing_msg):
     """Smali decompile process"""
