@@ -21,7 +21,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install python-telegram-bot==20.8 requests==2.31.0 pytz==2024.1
+          pip install python-telegram-bot==20.8 requests==2.31.0 pytz==2024.1 gdown
+          sudo apt update
+          sudo apt install apktool openjdk-17-jdk -y
 
       - name: Restore Database
         uses: actions/cache@v4
@@ -34,7 +36,7 @@ jobs:
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: "8859660196:AAFnaqQAFo_DHZ3lEYRyNAEgG54IscXW8vg"
-          ADMIN_ID: ${{ 5510702228 }}
+          ADMIN_ID: "5510702228"
         run: |
           python bot.py
 
