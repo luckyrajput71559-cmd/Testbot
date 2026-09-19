@@ -748,14 +748,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📌 COMMANDS:
 
-/start      - Show menu
-/redeem     - Activate key
-/mykey      - Check key
-/dump       - Dump + Radar 2 scan
-/armkiller  - Bypass ARM protection in APK
-/jsonurl    - Analyze JSON from URL
-/help       - All commands
-/buy        - Pricing info
+/start              - Show menu
+/redeem             - Activate key
+/mykey              - Check key
+/dump               - Dump + Radar 2 scan
+/armkiller          - Bypass ARM protection in APK
+/jsonurl            - Analyze JSON from URL
+/sign               - Sign APK
+/apktool            - Decompile/Recompile APK
+/smali              - Extract smali from APK
+/anti_debug         - Remove anti-debug
+/anti_screenshot    - Remove screenshot block
+/root_detect        - Remove root detection
+/help               - All commands
+/buy                - Pricing info
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 Need help? Contact: {DEV_NAME}
